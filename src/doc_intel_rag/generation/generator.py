@@ -24,7 +24,27 @@ async def stream_generate(
     temperature: float = 0.2,
     settings: Settings | None = None,
 ) -> AsyncIterator[str]:
-    """Yield SSE-formatted data strings. Final event includes metadata."""
+    """Stream a cited RAG answer as Server-Sent Events.
+
+    Assembles the multimodal context from ``chunks``, calls the Mesh API with
+    ``stream=True``, and yields SSE frames.  The final frame carries a
+    ``"done": true`` payload with full source metadata.
+
+    Args:
+        query: Sanitised user query (post-input-guard).
+        chunks: Reranked chunks, including any web-fallback results.
+        groundedness_score: Score from :func:`~doc_intel_rag.retrieval.groundedness.score_groundedness`.
+        fallback_used: Whether Tavily results are included in ``chunks``.
+        max_tokens: Maximum tokens the LLM may generate.
+        temperature: Sampling temperature (0 = deterministic).
+        settings: Optional settings override; uses the global singleton when ``None``.
+
+    Yields:
+        SSE-formatted strings of the form
+        ``data: {"delta": "...", "done": false}\\n\\n``.
+        The final yield is
+        ``data: {"done": true, "sources": [...], "groundedness_score": ..., "fallback_used": ...}\\n\\n``.
+    """
     cfg = settings or get_settings()
 
     context_text = build_context_text(chunks)
@@ -92,7 +112,23 @@ async def generate(
     temperature: float = 0.2,
     settings: Settings | None = None,
 ) -> str:
-    """Non-streaming generation — collects the full answer."""
+    """Collect a complete answer by consuming :func:`stream_generate` internally.
+
+    Convenience wrapper for the non-streaming ``/generate`` response path.
+
+    Args:
+        query: Sanitised user query.
+        chunks: Reranked context chunks.
+        groundedness_score: Pre-computed groundedness score.
+        fallback_used: Whether Tavily web results were appended to ``chunks``.
+        max_tokens: Maximum generation tokens.
+        temperature: LLM sampling temperature.
+        settings: Optional settings override.
+
+    Returns:
+        The full generated answer string including inline citations and
+        the bibliography block, but excluding the SSE envelope.
+    """
     parts: list[str] = []
     async for event in stream_generate(
         query=query,

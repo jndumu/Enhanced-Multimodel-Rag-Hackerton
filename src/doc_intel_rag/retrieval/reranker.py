@@ -14,13 +14,42 @@ from doc_intel_rag.retrieval.hybrid_searcher import ScoredChunk
 
 @runtime_checkable
 class BaseReranker(Protocol):
+    """Structural protocol satisfied by all reranker backends.
+
+    Any class that implements ``async def rerank(...)`` with the correct
+    signature is a valid reranker and can be injected via FastAPI dependencies.
+
+    **Forbidden backends**: Qwen, BGE, Ollama, and Mesh API must not be used
+    for reranking — only Cohere, Jina, and OpenAI are permitted.
+    """
+
     async def rerank(
         self, query: str, chunks: list[ScoredChunk], top_n: int
-    ) -> list[ScoredChunk]: ...
+    ) -> list[ScoredChunk]:
+        """Re-score and sort chunks by relevance to the query.
+
+        Args:
+            query: The user's search query.
+            chunks: Candidate chunks from the hybrid retriever.
+            top_n: Maximum number of chunks to return.
+
+        Returns:
+            Up to ``top_n`` :class:`ScoredChunk` objects sorted by descending
+            relevance score.
+        """
+        ...
 
 
 class CohereReranker:
-    """Cohere rerank-v3.5 — supports text and image documents."""
+    """Reranker backed by Cohere's ``rerank-v3.5`` model.
+
+    Sends up to ``top_n`` document snippets (first 2000 chars each) to the
+    Cohere Rerank v3 API and returns results sorted by ``relevance_score``.
+    Retries up to 3 times with exponential back-off on any exception.
+
+    Args:
+        settings: Runtime configuration supplying the Cohere API key and model name.
+    """
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings

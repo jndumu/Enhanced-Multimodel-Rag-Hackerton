@@ -18,6 +18,19 @@ from doc_intel_rag.parsing.entity_types import EntityLabel, ENTITY_TO_MODALITY
 
 @dataclass
 class BBox:
+    """Axis-aligned bounding box of a detected layout element.
+
+    Coordinates are in PDF points (72 dpi) relative to the page origin
+    (bottom-left for most PDF renderers).
+
+    Attributes:
+        x0: Left edge of the bounding box.
+        y0: Bottom edge of the bounding box.
+        x1: Right edge of the bounding box.
+        y1: Top edge of the bounding box.
+        page: 1-based page number on which this box appears.
+    """
+
     x0: float
     y0: float
     x1: float
@@ -27,6 +40,20 @@ class BBox:
 
 @dataclass
 class ParsedElement:
+    """A single layout element detected by PP-DocLayout-V3 / GLM-OCR.
+
+    Attributes:
+        label: Canonical :class:`~doc_intel_rag.parsing.entity_types.EntityLabel`.
+        text: Extracted text content (OCR output or raw text for PDFs).
+        page: 1-based page number.
+        confidence: Layout detection confidence in ``[0, 1]``.
+        bbox: Bounding box of the element on the page; ``None`` if unavailable.
+        raw_image_b64: Base64-encoded PNG crop of the element's bounding region;
+            populated for image, graph, and table elements.
+        latex: LaTeX string for formula elements; ``None`` for all others.
+        html: HTML representation for table elements; ``None`` for all others.
+    """
+
     label: EntityLabel
     text: str
     page: int
@@ -38,11 +65,23 @@ class ParsedElement:
 
     @property
     def modality(self) -> str:
+        """Lookup the canonical modality string for this element's label."""
         return ENTITY_TO_MODALITY[self.label]
 
 
 @dataclass
 class ParseResult:
+    """Complete output of a single document parse pass.
+
+    Attributes:
+        doc_id: SHA-256 hex digest of the source file bytes.  Used as the
+            idempotency key for ingestion.
+        source_file: Absolute path or URL of the document that was parsed.
+        page_count: Total number of pages in the document.
+        elements: Ordered list of all detected :class:`ParsedElement` objects.
+        raw_metadata: Provider-specific metadata returned by the GLM-OCR SDK.
+    """
+
     doc_id: str
     source_file: str
     page_count: int
@@ -51,10 +90,19 @@ class ParseResult:
 
 
 class DocumentParser:
-    """Wraps GLM-OCR SDK for cloud and local backends.
+    """Entry point for document parsing using GLM-OCR + PP-DocLayout-V3.
 
-    Falls back to a stub parser when glmocr is not installed or API key is empty,
-    so imports and unit tests work without the SDK.
+    Supports both ``cloud`` and ``local`` backends as configured by
+    ``settings.glmocr_backend``.  When the ``glmocr`` package is not installed
+    or the API key is absent, a :class:`_StubGLMOCRClient` is used so the rest
+    of the pipeline can still be exercised in tests without the SDK.
+
+    All API calls are retried up to 3 times with exponential back-off via
+    ``tenacity``.  CPU-bound operations (page rendering, bbox crop) are
+    offloaded to a thread pool via ``asyncio.get_event_loop().run_in_executor``.
+
+    Args:
+        settings: Runtime configuration. Defaults to the global singleton.
     """
 
     def __init__(self, settings: Settings | None = None) -> None:

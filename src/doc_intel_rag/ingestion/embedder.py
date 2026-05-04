@@ -17,9 +17,23 @@ _SPARSE_BUCKETS = 2**17  # 131072 — same as reference project
 
 
 class DocumentEmbedder:
+    """Produces dense and sparse embeddings for chunks and queries.
+
+    Dense embeddings are generated via the Mesh API ``embeddings`` endpoint
+    (batched at 256 texts per call) and cached in Redis using a SHA-256 key.
+
+    Sparse embeddings use BM25 TF feature-hashing over 2¹⁷ buckets — the
+    same implementation as the reference project — enabling hybrid Qdrant search.
+
+    Args:
+        settings: Runtime configuration. Defaults to the global singleton.
+        cache: Optional :class:`~doc_intel_rag.ingestion.cache.EmbeddingCache`
+            instance. When ``None``, every embedding request hits the API.
+    """
+
     def __init__(self, settings: Settings | None = None, cache: "object | None" = None) -> None:
         self._settings = settings or get_settings()
-        self._cache = cache  # EmbeddingCache | None
+        self._cache = cache
         self._client: Any = None
 
     def _get_client(self) -> Any:
@@ -34,7 +48,18 @@ class DocumentEmbedder:
     # ── Public interface ──────────────────────────────────────────────────────
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        """Return dense embeddings for a list of texts, using Redis cache."""
+        """Return dense embeddings for a list of texts, using Redis cache.
+
+        Cache hits are served from Redis without an API call. Cache misses are
+        batched into groups of 256 and sent to the Mesh API, then stored.
+
+        Args:
+            texts: Input strings to embed. Order is preserved in the output.
+
+        Returns:
+            A list of float vectors in the same order as the input, with length
+            equal to ``settings.mesh_embedding_dim``.
+        """
         if not texts:
             return []
 
@@ -66,11 +91,31 @@ class DocumentEmbedder:
         return [r for r in results if r is not None]
 
     async def embed_query(self, query: str) -> list[float]:
+        """Embed a single query string and return its dense vector.
+
+        Args:
+            query: The user's natural-language query.
+
+        Returns:
+            A float vector of length ``settings.mesh_embedding_dim``, or an
+            empty list if the API call fails.
+        """
         embs = await self.embed_texts([query])
         return embs[0] if embs else []
 
     def sparse_encode(self, text: str) -> dict[int, float]:
-        """BM25 TF feature-hashing sparse vector (2^17 buckets)."""
+        """Produce a BM25 TF sparse vector using MurmurHash3 feature hashing.
+
+        Tokens are lower-cased whitespace-split. Term frequencies are normalised
+        by the maximum TF in the document, yielding values in (0, 1].  The
+        2¹⁷ = 131 072 bucket space matches the Qdrant sparse index configuration.
+
+        Args:
+            text: Raw text to encode (pre-tokenisation is whitespace split).
+
+        Returns:
+            A sparse dict mapping bucket index → normalised TF weight.
+        """
         from sklearn.utils.murmurhash import murmurhash3_32  # type: ignore[import-untyped]
 
         tokens = text.lower().split()
@@ -130,4 +175,13 @@ def _cache_key(text: str, model: str) -> str:
 
 
 def get_embedder(settings: Settings | None = None, cache: "object | None" = None) -> DocumentEmbedder:
+    """Convenience factory for :class:`DocumentEmbedder`.
+
+    Args:
+        settings: Optional settings override.
+        cache: Optional Redis-backed embedding cache.
+
+    Returns:
+        A configured :class:`DocumentEmbedder` instance.
+    """
     return DocumentEmbedder(settings=settings, cache=cache)

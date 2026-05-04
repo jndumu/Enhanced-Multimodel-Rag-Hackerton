@@ -9,12 +9,27 @@ from loguru import logger
 
 
 class GraphStore:
-    """Per-document DiGraph store with 2-hop neighbour traversal."""
+    """In-memory per-document knowledge graph store.
+
+    Maintains one ``networkx.DiGraph`` per ingested document.  When a new
+    graph is added for an existing ``doc_id`` the new edges are merged via
+    ``nx.compose`` rather than replacing the existing graph.
+
+    For large deployments the graphs can be exported to Neo4j via
+    :meth:`export_to_neo4j` when ``NEO4J_URI`` is configured.
+    """
 
     def __init__(self) -> None:
         self._graphs: dict[str, nx.DiGraph] = {}
 
     def add_graph(self, doc_id: str, graph_json: dict[str, Any]) -> None:
+        """Deserialise a graph JSON payload and merge it into the store.
+
+        Args:
+            doc_id: SHA-256 hex digest identifying the source document.
+            graph_json: Dict with ``"nodes"`` and ``"edges"`` lists as produced
+                by :meth:`~doc_intel_rag.parsing.graph_extractor.GraphExtractor.serialize`.
+        """
         g: nx.DiGraph = nx.DiGraph()
         for node in graph_json.get("nodes", []):
             nid = node["id"]

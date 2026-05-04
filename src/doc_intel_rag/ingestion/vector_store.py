@@ -13,6 +13,24 @@ from doc_intel_rag.ingestion.graph_embedder import GRAPH_EMBED_DIM
 
 
 class QdrantDocumentStore:
+    """Async Qdrant client wrapper for hybrid document retrieval.
+
+    Manages a Qdrant collection with three named vectors:
+
+    * ``text_dense`` — cosine-similarity dense embeddings from the Mesh API.
+    * ``bm25_sparse`` — sparse BM25 TF feature-hashing vectors.
+    * ``graph_dense`` — 128-dim node2vec embeddings for graph-type chunks.
+
+    Hybrid search uses Qdrant ``Prefetch`` on all three vectors combined with
+    RRF (``Query(fusion="rrf")``) fusion.
+
+    Ingestion is idempotent: :meth:`doc_exists` checks for an existing
+    ``doc_id`` before processing, and ``force=True`` bypasses the check.
+
+    Args:
+        settings: Runtime configuration. Defaults to the global singleton.
+    """
+
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
         self._client: Any = None

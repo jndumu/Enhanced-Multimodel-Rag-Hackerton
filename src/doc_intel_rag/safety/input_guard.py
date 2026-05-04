@@ -39,11 +39,40 @@ _HARMFUL_PATTERNS = [
 
 
 class InputGuard:
+    """Three-stage input safety pipeline run before every retrieval call.
+
+    **Stage 1 — PII detection**: ``presidio-analyzer`` scans for 10 entity
+    types and either redacts (default) or blocks the request depending on
+    ``settings.safety_block_on_pii``.
+
+    **Stage 2 — Prompt injection detection**: 13 rule-based regex patterns plus
+    an optional Mesh API LLM classifier catch attempts to override instructions.
+
+    **Stage 3 — Content classification**: Simple regex patterns block overtly
+    harmful requests; off-topic ones are allowed through with a warning flag.
+
+    Args:
+        settings: Runtime configuration. Defaults to the global singleton.
+    """
+
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
 
     async def check(self, query: str) -> SafetyResult:
-        """Run all input checks. Returns SafetyResult or raises GuardrailViolation."""
+        """Run all three input safety stages on the raw user query.
+
+        Args:
+            query: Raw text received from the client.
+
+        Returns:
+            A :class:`~doc_intel_rag.safety.schemas.SafetyResult` with the
+            sanitised query and metadata about what was found.
+
+        Raises:
+            GuardrailViolation: When PII is found and ``safety_block_on_pii``
+                is ``True``, when prompt injection is detected, or when harmful
+                content is classified.
+        """
         sanitised = query
         pii_redacted = False
         redacted_entities: list[str] = []

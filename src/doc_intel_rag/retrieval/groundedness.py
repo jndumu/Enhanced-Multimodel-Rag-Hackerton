@@ -11,11 +11,21 @@ def score_groundedness(
     query_embedding: list[float],
     chunks: list[ScoredChunk],
 ) -> float:
-    """Return a [0,1] groundedness score.
+    """Estimate how well the retrieved chunks ground the query.
 
-    Computed as the rerank-score-weighted average of cosine similarities
-    between the query embedding and the top-chunk text embeddings (approximated
-    by the retrieval scores already normalised by Qdrant/reranker).
+    Uses the reranker scores as a proxy for chunk relevance and computes a
+    normalised weighted average.  A score below
+    ``settings.groundedness_threshold`` (default 0.45) signals that the
+    retrieved context is unlikely to support a faithful answer, triggering
+    the Tavily web fallback.
+
+    Args:
+        query_embedding: Dense embedding vector for the user query.
+        chunks: Reranked candidate chunks from the retrieval pipeline.
+
+    Returns:
+        A float in ``[0, 1]``; higher values indicate that highly-scored
+        chunks were retrieved and the answer is likely well-grounded.
     """
     if not chunks:
         return 0.0

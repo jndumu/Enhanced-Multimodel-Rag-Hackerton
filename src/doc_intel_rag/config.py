@@ -13,6 +13,25 @@ class ImproperlyConfigured(RuntimeError):
 
 
 class Settings(BaseSettings):
+    """All runtime settings loaded from environment variables or a .env file.
+
+    Validated at startup; the application refuses to bind if required values
+    are missing. Sensitive fields are masked in :meth:`masked_dict`.
+
+    Attributes:
+        mesh_api_key: Primary LLM + embedding API key (required in production).
+        mesh_api_base_url: OpenAI-compatible base URL for the Mesh API.
+        mesh_llm_model: Model name used for generation and routing calls.
+        mesh_embedding_model: Model name used for dense text embeddings.
+        mesh_embedding_dim: Output dimension of the embedding model.
+        reranker_backend: Which reranker to use — ``cohere``, ``jina``, or ``openai``.
+        groundedness_threshold: Retrieval score below which web fallback fires.
+        fallback_enabled: Master toggle for the Tavily web search fallback.
+        max_chunk_tokens: Hard token cap per text chunk.
+        chunk_overlap_tokens: Tokens carried over between consecutive text chunks.
+        api_keys: List of valid ``X-API-Key`` header values; empty = open access.
+    """
+
     # === Mesh API (primary LLM + embeddings) ===
     mesh_api_key: str = Field(default="", description="Mesh API key (required for production)")
     mesh_api_base_url: str = "https://api.mesh.ai/v1"
@@ -65,8 +84,7 @@ class Settings(BaseSettings):
     ingest_batch_size: int = 64
 
     # === API ===
-    # Stored as plain string; parsed to list in _parse_api_keys validator.
-    # Use comma-separated values in .env: API_KEYS=key1,key2
+    # Use JSON array format in .env: API_KEYS=["key1","key2"]
     api_keys: list[str] = Field(default_factory=list)
     rate_limit_per_minute: int = 60
     streaming_enabled: bool = True
@@ -87,7 +105,6 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
-        # Treat empty env var values as unset (use field default instead of failing)
         env_ignore_empty=True,
     )
 
@@ -107,7 +124,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_required_keys(self) -> "Settings":
-        # In non-dev environments enforce Mesh API key presence
         if not self.mesh_api_key:
             import os
             if os.getenv("DOC_INTEL_SKIP_VALIDATION") != "1":
@@ -118,7 +134,11 @@ class Settings(BaseSettings):
         return self
 
     def masked_dict(self) -> dict[str, object]:
-        """Return settings as dict with secret fields masked — safe for logging."""
+        """Return a settings snapshot with all secret fields replaced by ``***``.
+
+        Returns:
+            A plain ``dict`` safe for structured logging and debug output.
+        """
         d = self.model_dump()
         secret_fields = {
             "mesh_api_key", "glmocr_api_key", "qdrant_api_key",
@@ -137,6 +157,18 @@ _settings: Settings | None = None
 
 
 def get_settings() -> Settings:
+    """Return the process-wide :class:`Settings` singleton.
+
+    Instantiates and caches on first call; subsequent calls return the cached
+    instance. Call :func:`reset_settings` between tests to clear the cache.
+
+    Returns:
+        The validated ``Settings`` instance.
+
+    Raises:
+        ImproperlyConfigured: If ``MESH_API_KEY`` is missing and
+            ``DOC_INTEL_SKIP_VALIDATION`` is not set.
+    """
     global _settings
     if _settings is None:
         _settings = Settings()
@@ -144,6 +176,10 @@ def get_settings() -> Settings:
 
 
 def reset_settings() -> None:
-    """Reset cached settings — used in tests."""
+    """Clear the cached :class:`Settings` singleton.
+
+    Use this in test fixtures to ensure each test starts with a fresh
+    configuration derived from the current environment.
+    """
     global _settings
     _settings = None

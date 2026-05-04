@@ -18,6 +18,16 @@ _MODALITY_FILTER_MAP: dict[QueryIntent, list[str]] = {
 
 @dataclass
 class ScoredChunk:
+    """A retrieved chunk annotated with its retrieval score and source.
+
+    Attributes:
+        score: Relevance score assigned by the retriever or reranker (higher is better).
+        payload: Full Qdrant point payload or web-result dict.
+        chunk_id: Matches the ``chunk_id`` field stored in the Qdrant payload.
+        retrieval_source: ``"vector"`` for Qdrant results, ``"graph"`` for graph
+            traversal results, or ``"web"`` for Tavily fallback results.
+    """
+
     score: float
     payload: dict[str, Any]
     chunk_id: str
@@ -49,6 +59,24 @@ class ScoredChunk:
 
 
 class HybridSearcher:
+    """Executes hybrid dense + sparse + graph search with Reciprocal Rank Fusion.
+
+    Combines three retrieval signals via Qdrant ``Prefetch`` + RRF:
+
+    * ``text_dense`` — cosine similarity against Mesh API embeddings.
+    * ``bm25_sparse`` — BM25 feature-hashing TF overlap.
+    * ``graph_dense`` — node2vec averaged embeddings (graph chunks only).
+
+    For ``relational`` and ``analytical`` intents, 2-hop graph traversal is
+    performed from the top-5 seed chunks and merged via a second RRF pass.
+
+    Args:
+        vector_store: A :class:`~doc_intel_rag.ingestion.vector_store.QdrantDocumentStore`.
+        embedder: A :class:`~doc_intel_rag.ingestion.embedder.DocumentEmbedder`.
+        graph_store: Optional :class:`~doc_intel_rag.ingestion.graph_store.GraphStore`
+            for graph traversal; traversal is skipped when ``None``.
+    """
+
     def __init__(
         self,
         vector_store: "object",
@@ -67,6 +95,18 @@ class HybridSearcher:
         collection: str | None = None,
         extra_filter: Any = None,
     ) -> list[ScoredChunk]:
+        """Execute hybrid search and return ranked :class:`ScoredChunk` results.
+
+        Args:
+            query: Natural-language query string.
+            top_k: Maximum number of chunks to return (doubled for ``ANALYTICAL``).
+            intent: Query intent from :class:`~doc_intel_rag.retrieval.semantic_router.SemanticRouter`.
+            collection: Qdrant collection name; defaults to ``settings.qdrant_collection``.
+            extra_filter: Additional Qdrant ``Filter`` condition merged with intent filters.
+
+        Returns:
+            Ranked list of :class:`ScoredChunk` objects, highest score first.
+        """
         from doc_intel_rag.ingestion.embedder import DocumentEmbedder
         from doc_intel_rag.ingestion.vector_store import QdrantDocumentStore
 

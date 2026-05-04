@@ -9,7 +9,15 @@ from loguru import logger
 
 
 class EmbeddingCache:
-    """Thin async wrapper around redis.asyncio for embedding storage."""
+    """Redis-backed async cache for dense embedding vectors.
+
+    Keys are SHA-256 hashes of ``"{model}:{text}"`` so cache entries are
+    invalidated automatically when the embedding model changes.
+
+    Args:
+        redis_client: An ``redis.asyncio`` client instance.
+        ttl: Time-to-live in seconds (default 86 400 = 1 day).
+    """
 
     def __init__(self, redis_client: Any, ttl: int = 86400) -> None:
         self._r = redis_client
@@ -31,7 +39,19 @@ class EmbeddingCache:
 
 
 class QueryCache:
-    """Cache full (query, top_k, filters) → ranked results with TTL."""
+    """Redis-backed async cache for full retrieval result lists.
+
+    Caches ``(query, top_k, filters)`` → ``list[ScoredChunk]`` responses so
+    repeat identical queries are served without hitting Qdrant or the reranker.
+
+    All keys are prefixed with ``"qcache:"`` so :meth:`flush_all` only removes
+    query cache entries, leaving embedding entries untouched.  Entries are
+    invalidated per ``doc_id`` after re-ingestion via :meth:`invalidate_doc`.
+
+    Args:
+        redis_client: An ``redis.asyncio`` client instance.
+        ttl: Time-to-live in seconds (default 3 600 = 1 hour).
+    """
 
     _PREFIX = "qcache:"
 
@@ -81,6 +101,15 @@ class QueryCache:
 
 
 async def create_redis_client(url: str) -> Any:
+    """Create and return a connected ``redis.asyncio`` client.
+
+    Args:
+        url: Redis connection URL (e.g. ``"redis://localhost:6379"``).
+
+    Returns:
+        An ``redis.asyncio`` client configured with ``decode_responses=False``
+        so raw bytes are preserved for JSON deserialisation.
+    """
     import redis.asyncio as aioredis
     client = aioredis.from_url(url, decode_responses=False)
     return client

@@ -43,9 +43,16 @@ def _mask_secrets(record: dict) -> bool:  # type: ignore[type-arg]
 
 
 def setup_logging(settings: "Settings | None" = None) -> None:
-    """Configure Loguru sinks and intercept stdlib logging.
+    """Configure Loguru sinks and intercept all stdlib ``logging`` output.
 
-    Safe to call multiple times — removes previous sinks first.
+    Removes any previously registered Loguru sinks before adding new ones,
+    so this function is safe to call multiple times (e.g. during tests).
+    When ``settings.otel_endpoint`` is set, also initialises an OTLP gRPC
+    tracer provider via :func:`_setup_otel`.
+
+    Args:
+        settings: Optional pre-loaded :class:`~doc_intel_rag.config.Settings`
+            instance. When ``None`` the global singleton is used.
     """
     from doc_intel_rag.config import get_settings
 
@@ -125,7 +132,16 @@ def _setup_otel(endpoint: str, service_name: str, log_level: str) -> None:
 
 
 def get_tracer(name: str = "doc-intel-rag") -> "object":
-    """Return an OTel tracer — no-op if OTel is not configured."""
+    """Return an OpenTelemetry tracer, falling back to a no-op stub.
+
+    Args:
+        name: Instrumentation scope name passed to ``trace.get_tracer``.
+
+    Returns:
+        A real ``opentelemetry.trace.Tracer`` when OTel is installed and
+        configured, otherwise a :class:`_NoopTracer` that silently discards
+        all span operations.
+    """
     try:
         from opentelemetry import trace
         return trace.get_tracer(name)
