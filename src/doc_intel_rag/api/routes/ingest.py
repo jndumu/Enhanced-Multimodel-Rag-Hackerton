@@ -107,9 +107,6 @@ async def _run_ingest(
     from doc_intel_rag.ingestion.embedder import DocumentEmbedder
     from doc_intel_rag.ingestion.cache import QueryCache
 
-    assert isinstance(vector_store, QdrantDocumentStore)
-    assert isinstance(embedder, DocumentEmbedder)
-
     settings = get_settings()
     parser = DocumentParser(settings)
     parse_result = await parser.parse(source)
