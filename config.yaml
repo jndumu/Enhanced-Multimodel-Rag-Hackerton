@@ -1,0 +1,53 @@
+# GLM-OCR SDK configuration
+# This file is read by the glmocr SDK when using local backend.
+
+glmocr:
+  backend: cloud          # cloud | local
+  cloud:
+    timeout_seconds: 120
+    max_retries: 3
+  local:
+    model: glm-ocr:latest
+    device: cpu           # cpu | cuda
+    batch_size: 4
+
+layout:
+  model: PP-DocLayout-V3
+  confidence_threshold: 0.5
+  nms_threshold: 0.3
+  labels:
+    - document_title
+    - section_title
+    - subsection_title
+    - paragraph
+    - abstract
+    - list_item
+    - blockquote
+    - footnote
+    - header
+    - footer
+    - page_number
+    - formula
+    - formula_block
+    - inline_formula
+    - chemical_formula
+    - equation_number
+    - table
+    - table_caption
+    - table_footnote
+    - figure
+    - image
+    - figure_caption
+    - chart
+    - flowchart
+    - diagram
+    - relationship_graph
+    - medical_scan
+    - histology
+    - clinical_photo
+    - algorithm
+    - pseudo_code
+    - code_block
+    - citation
+    - reference_list
+    - seal

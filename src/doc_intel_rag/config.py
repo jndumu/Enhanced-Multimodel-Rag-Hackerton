@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     ingest_batch_size: int = 64
 
     # === API ===
+    # Stored as plain string; parsed to list in _parse_api_keys validator.
+    # Use comma-separated values in .env: API_KEYS=key1,key2
     api_keys: list[str] = Field(default_factory=list)
     rate_limit_per_minute: int = 60
     streaming_enabled: bool = True
@@ -85,8 +87,8 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
-        # Comma-separated list support for API_KEYS env var
-        env_parse_none_str="",
+        # Treat empty env var values as unset (use field default instead of failing)
+        env_ignore_empty=True,
     )
 
     @field_validator("api_keys", mode="before")
