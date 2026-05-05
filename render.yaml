@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: doc-intel-rag
+    runtime: docker
+    dockerfilePath: ./docker/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: MESH_API_KEY
+        sync: false
+      - key: MESH_API_BASE_URL
+        sync: false
+      - key: MESH_LLM_MODEL
+        sync: false
+      - key: MESH_EMBEDDING_MODEL
+        sync: false
+      - key: MESH_EMBEDDING_DIM
+        sync: false
+      - key: GLMOCR_API_KEY
+        sync: false
+      - key: GLMOCR_BACKEND
+        value: local
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: RERANKER_BACKEND
+        value: cohere
+      - key: COHERE_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: FALLBACK_ENABLED
+        value: "true"
+      - key: SAFETY_PII_ENABLED
+        value: "true"
+      - key: LOG_JSON
+        value: "true"
+      - key: DOC_INTEL_SKIP_VALIDATION
+        value: "0"
