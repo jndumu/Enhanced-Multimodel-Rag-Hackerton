@@ -164,7 +164,7 @@ class QdrantDocumentStore:
         collection: str | None = None,
         query_filter: Any = None,
     ) -> list[dict[str, Any]]:
-        from qdrant_client.models import Prefetch, Query, SparseVector
+        from qdrant_client.models import Fusion, FusionQuery, Prefetch, SparseVector
 
         client = await self._get_client()
         col = collection or self._settings.qdrant_collection
@@ -190,7 +190,7 @@ class QdrantDocumentStore:
         results = await client.query_points(
             collection_name=col,
             prefetch=prefetch,
-            query=Query(fusion="rrf"),
+            query=FusionQuery(fusion=Fusion.RRF),
             limit=top_k,
             with_payload=True,
         )
