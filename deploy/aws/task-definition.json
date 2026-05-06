@@ -1,0 +1,80 @@
+{
+  "family": "doc-intel-rag",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "doc-intel-rag",
+      "image": "ACCOUNT_ID.dkr.ecr.AWS_REGION.amazonaws.com/doc-intel-rag:latest",
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "environment": [
+        { "name": "GLMOCR_BACKEND",             "value": "local" },
+        { "name": "RERANKER_BACKEND",            "value": "cohere" },
+        { "name": "MESH_LLM_MODEL",              "value": "llama3.2:1b" },
+        { "name": "MESH_EMBEDDING_MODEL",        "value": "nomic-embed-text" },
+        { "name": "MESH_EMBEDDING_DIM",          "value": "768" },
+        { "name": "MESH_API_BASE_URL",           "value": "http://localhost:11434/v1" },
+        { "name": "LOG_JSON",                    "value": "true" },
+        { "name": "LOG_LEVEL",                   "value": "INFO" },
+        { "name": "FALLBACK_ENABLED",            "value": "true" },
+        { "name": "SAFETY_PII_ENABLED",          "value": "true" },
+        { "name": "ENRICHMENT_ENABLED",          "value": "true" },
+        { "name": "STREAMING_ENABLED",           "value": "true" },
+        { "name": "CORS_ORIGINS",                "value": "[\"*\"]" },
+        { "name": "API_KEYS",                    "value": "[]" }
+      ],
+      "secrets": [
+        {
+          "name": "MESH_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:AWS_REGION:ACCOUNT_ID:secret:doc-intel-rag/MESH_API_KEY"
+        },
+        {
+          "name": "QDRANT_URL",
+          "valueFrom": "arn:aws:secretsmanager:AWS_REGION:ACCOUNT_ID:secret:doc-intel-rag/QDRANT_URL"
+        },
+        {
+          "name": "QDRANT_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:AWS_REGION:ACCOUNT_ID:secret:doc-intel-rag/QDRANT_API_KEY"
+        },
+        {
+          "name": "REDIS_URL",
+          "valueFrom": "arn:aws:secretsmanager:AWS_REGION:ACCOUNT_ID:secret:doc-intel-rag/REDIS_URL"
+        },
+        {
+          "name": "COHERE_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:AWS_REGION:ACCOUNT_ID:secret:doc-intel-rag/COHERE_API_KEY"
+        },
+        {
+          "name": "TAVILY_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:AWS_REGION:ACCOUNT_ID:secret:doc-intel-rag/TAVILY_API_KEY"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/doc-intel-rag",
+          "awslogs-region": "AWS_REGION",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"],
+        "interval": 30,
+        "timeout": 10,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}
