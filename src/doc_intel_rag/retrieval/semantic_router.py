@@ -33,6 +33,16 @@ _SYSTEM_PROMPT = (
 class SemanticRouter:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
+        self._client: "object | None" = None
+
+    def _get_client(self) -> "object":
+        if self._client is None:
+            from openai import AsyncOpenAI
+            self._client = AsyncOpenAI(
+                api_key=self._settings.mesh_api_key,
+                base_url=self._settings.mesh_api_base_url,
+            )
+        return self._client
 
     @retry(
         retry=retry_if_exception_type(Exception),
@@ -42,14 +52,10 @@ class SemanticRouter:
     )
     async def classify(self, query: str) -> QueryIntent:
         import json
-        from openai import AsyncOpenAI
 
         try:
-            client = AsyncOpenAI(
-                api_key=self._settings.mesh_api_key,
-                base_url=self._settings.mesh_api_base_url,
-            )
-            response = await client.chat.completions.create(
+            client = self._get_client()
+            response = await client.chat.completions.create(  # type: ignore[attr-defined]
                 model=self._settings.mesh_llm_model,
                 response_format={"type": "json_object"},
                 messages=[
