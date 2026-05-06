@@ -110,8 +110,10 @@ class HybridSearcher:
         from doc_intel_rag.ingestion.embedder import DocumentEmbedder
         from doc_intel_rag.ingestion.vector_store import QdrantDocumentStore
 
-        assert isinstance(self._vs, QdrantDocumentStore)
-        assert isinstance(self._emb, DocumentEmbedder)
+        if not isinstance(self._vs, QdrantDocumentStore):
+            raise TypeError(f"vector_store must be QdrantDocumentStore, got {type(self._vs)}")
+        if not isinstance(self._emb, DocumentEmbedder):
+            raise TypeError(f"embedder must be DocumentEmbedder, got {type(self._emb)}")
 
         # Expand top_k for analytical queries
         effective_k = top_k * 2 if intent == QueryIntent.ANALYTICAL else top_k
@@ -169,8 +171,10 @@ class HybridSearcher:
         from doc_intel_rag.ingestion.graph_store import GraphStore
         from doc_intel_rag.ingestion.vector_store import QdrantDocumentStore
 
-        assert isinstance(self._gs, GraphStore)
-        assert isinstance(self._vs, QdrantDocumentStore)
+        if not isinstance(self._gs, GraphStore):
+            return []
+        if not isinstance(self._vs, QdrantDocumentStore):
+            return []
 
         neighbour_ids: set[str] = set()
         for chunk in seed_chunks:
