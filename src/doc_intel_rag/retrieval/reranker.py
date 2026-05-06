@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from typing import Protocol, runtime_checkable
 
 from loguru import logger
@@ -34,10 +35,15 @@ class BaseReranker(Protocol):
             top_n: Maximum number of chunks to return.
 
         Returns:
-            Up to ``top_n`` :class:`ScoredChunk` objects sorted by descending
-            relevance score.
+            Up to ``top_n`` new :class:`ScoredChunk` objects (input is never
+            mutated) sorted by descending relevance score.
         """
         ...
+
+
+def _replace_score(chunk: ScoredChunk, score: float) -> ScoredChunk:
+    """Return a new ScoredChunk with an updated score; never mutates input."""
+    return dataclasses.replace(chunk, score=score)
 
 
 class CohereReranker:
@@ -53,6 +59,13 @@ class CohereReranker:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._client: "object | None" = None
+
+    def _get_client(self) -> "object":
+        if self._client is None:
+            import cohere
+            self._client = cohere.AsyncClientV2(api_key=self._settings.cohere_api_key)
+        return self._client
 
     @retry(
         retry=retry_if_exception_type(Exception),
@@ -63,27 +76,27 @@ class CohereReranker:
     async def rerank(
         self, query: str, chunks: list[ScoredChunk], top_n: int
     ) -> list[ScoredChunk]:
-        import cohere
+        if not chunks:
+            return []
 
-        client = cohere.AsyncClientV2(api_key=self._settings.cohere_api_key)
+        client = self._get_client()
 
         documents = [
-            {"text": c.text[:2000] or c.payload.get("text", "")[:2000]}
+            {"text": (c.text or c.payload.get("text", ""))[:2000]}
             for c in chunks
         ]
 
-        response = await client.rerank(
+        response = await client.rerank(  # type: ignore[attr-defined]
             model=self._settings.cohere_rerank_model,
             query=query,
             documents=documents,
             top_n=min(top_n, len(chunks)),
         )
 
-        reranked: list[ScoredChunk] = []
-        for result in response.results:
-            chunk = chunks[result.index]
-            chunk.score = float(result.relevance_score)
-            reranked.append(chunk)
+        reranked = [
+            _replace_score(chunks[r.index], float(r.relevance_score))
+            for r in response.results
+        ]
 
         logger.debug("Cohere rerank done", top_n=len(reranked))
         return reranked
@@ -106,9 +119,12 @@ class JinaReranker:
     async def rerank(
         self, query: str, chunks: list[ScoredChunk], top_n: int
     ) -> list[ScoredChunk]:
+        if not chunks:
+            return []
+
         import httpx
 
-        documents = [c.text[:2000] or c.payload.get("text", "")[:2000] for c in chunks]
+        documents = [(c.text or c.payload.get("text", ""))[:2000] for c in chunks]
 
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
@@ -124,40 +140,49 @@ class JinaReranker:
             response.raise_for_status()
             data = response.json()
 
-        reranked: list[ScoredChunk] = []
-        for result in data.get("results", []):
-            idx = result["index"]
-            chunks[idx].score = float(result["relevance_score"])
-            reranked.append(chunks[idx])
+        reranked = [
+            _replace_score(chunks[r["index"]], float(r["relevance_score"]))
+            for r in data.get("results", [])
+        ]
 
         logger.debug("Jina rerank done", top_n=len(reranked))
         return reranked
 
 
 class OpenAICrossEncoder:
-    """gpt-4o-mini as cross-encoder: parallel async (query, chunk) scoring."""
+    """GPT-4o-mini as cross-encoder: parallel async (query, chunk) scoring."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._client: "object | None" = None
+
+    def _get_client(self) -> "object":
+        if self._client is None:
+            from openai import AsyncOpenAI
+            self._client = AsyncOpenAI(
+                api_key=self._settings.openai_api_key,
+                base_url="https://api.openai.com/v1",
+            )
+        return self._client
 
     async def rerank(
         self, query: str, chunks: list[ScoredChunk], top_n: int
     ) -> list[ScoredChunk]:
-        scores = await asyncio.gather(
+        if not chunks:
+            return []
+
+        raw_scores = await asyncio.gather(
             *[self._score_pair(query, c) for c in chunks],
             return_exceptions=True,
         )
 
-        scored: list[tuple[float, ScoredChunk]] = []
-        for i, score in enumerate(scores):
-            if isinstance(score, Exception):
-                scored.append((chunks[i].score, chunks[i]))
-            else:
-                chunks[i].score = float(score)
-                scored.append((float(score), chunks[i]))
+        pairs: list[tuple[float, ScoredChunk]] = []
+        for chunk, score in zip(chunks, raw_scores):
+            s = chunk.score if isinstance(score, Exception) else float(score)
+            pairs.append((s, _replace_score(chunk, s)))
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [c for _, c in scored[:top_n]]
+        pairs.sort(key=lambda x: x[0], reverse=True)
+        return [c for _, c in pairs[:top_n]]
 
     @retry(
         retry=retry_if_exception_type(Exception),
@@ -166,20 +191,16 @@ class OpenAICrossEncoder:
         reraise=False,
     )
     async def _score_pair(self, query: str, chunk: ScoredChunk) -> float:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(
-            api_key=self._settings.openai_api_key,
-            base_url="https://api.openai.com/v1",
-        )
-        response = await client.chat.completions.create(
+        client = self._get_client()
+        response = await client.chat.completions.create(  # type: ignore[attr-defined]
             model=self._settings.openai_rerank_model,
             messages=[
                 {
                     "role": "user",
                     "content": (
-                        f"Score how relevant this passage is to the query on a scale of 0.0 to 1.0. "
-                        f"Return ONLY the decimal number.\n\nQuery: {query}\n\nPassage: {chunk.text[:800]}"
+                        "Score how relevant this passage is to the query on a scale "
+                        "of 0.0 to 1.0. Return ONLY the decimal number.\n\n"
+                        f"Query: {query}\n\nPassage: {chunk.text[:800]}"
                     ),
                 }
             ],
@@ -187,10 +208,25 @@ class OpenAICrossEncoder:
             temperature=0,
         )
         raw = (response.choices[0].message.content or "0.5").strip()
-        return min(1.0, max(0.0, float(raw)))
+        try:
+            return min(1.0, max(0.0, float(raw)))
+        except ValueError:
+            return 0.5
 
 
 def get_reranker(settings: Settings | None = None) -> BaseReranker:
+    """Instantiate and return the configured reranker backend.
+
+    Args:
+        settings: Optional settings override; uses the global singleton when ``None``.
+
+    Returns:
+        A :class:`BaseReranker` instance for the configured backend.
+
+    Raises:
+        ValueError: When ``settings.reranker_backend`` is not one of
+            ``cohere``, ``jina``, ``openai``.
+    """
     cfg = settings or get_settings()
     match cfg.reranker_backend:
         case "cohere":
@@ -200,4 +236,7 @@ def get_reranker(settings: Settings | None = None) -> BaseReranker:
         case "openai":
             return OpenAICrossEncoder(cfg)
         case _:
-            raise ValueError(f"Unknown reranker backend: {cfg.reranker_backend}")
+            raise ValueError(
+                f"Unknown reranker backend: {cfg.reranker_backend!r}. "
+                "Valid options: cohere, jina, openai"
+            )
