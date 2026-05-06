@@ -46,7 +46,7 @@ def client():
 
 def test_generate_endpoint_is_reachable(client: TestClient):
     resp = client.post(
-        "/generate",
+        "/v1/generate",
         json={"query": "What is the summary?", "streaming": False, "top_k": 5, "top_n": 3},
         headers={"X-API-Key": ""},
     )
@@ -56,7 +56,7 @@ def test_generate_endpoint_is_reachable(client: TestClient):
 
 def test_generate_streaming_returns_event_stream(client: TestClient):
     resp = client.post(
-        "/generate",
+        "/v1/generate",
         json={"query": "Stream test", "streaming": True, "top_k": 3, "top_n": 2},
         headers={"X-API-Key": ""},
     )
