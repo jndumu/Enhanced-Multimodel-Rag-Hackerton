@@ -139,20 +139,16 @@ class DocumentParser:
         reraise=True,
     )
     async def parse(self, file_path: str | Path) -> ParseResult:
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Document not found: {path}")
-
-        raw_bytes = path.read_bytes()
+        raw_bytes, resolved_path = await self._load_source(file_path)
         doc_id = hashlib.sha256(raw_bytes).hexdigest()
 
-        logger.info("Parsing document", doc_id=doc_id[:12], path=str(path))
+        logger.info("Parsing document", doc_id=doc_id[:12], path=resolved_path)
 
         client = self._get_client()
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         raw_result = await loop.run_in_executor(
-            None, lambda: client.parse(str(path))
+            None, lambda: client.parse(resolved_path)
         )
 
         elements = self._convert_elements(raw_result, raw_bytes)
@@ -167,11 +163,29 @@ class DocumentParser:
 
         return ParseResult(
             doc_id=doc_id,
-            source_file=str(path),
+            source_file=resolved_path,
             page_count=page_count,
             elements=elements,
             raw_metadata=getattr(raw_result, "metadata", {}),
         )
+
+    async def _load_source(self, file_path: str | Path) -> tuple[bytes, str]:
+        """Load raw bytes from a local path or HTTP/HTTPS URL.
+
+        Returns:
+            Tuple of (raw_bytes, resolved_path_string).
+        """
+        source = str(file_path)
+        if source.startswith(("http://", "https://")):
+            import httpx
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+                response = await client.get(source)
+                response.raise_for_status()
+                return response.content, source
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Document not found: {path}")
+        return path.read_bytes(), str(path)
 
     def _convert_elements(self, raw_result: Any, raw_bytes: bytes) -> list[ParsedElement]:
         elements: list[ParsedElement] = []
