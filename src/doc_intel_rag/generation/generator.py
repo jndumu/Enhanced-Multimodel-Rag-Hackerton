@@ -3,12 +3,25 @@
 from __future__ import annotations
 
 import json
-from typing import AsyncIterator
+from functools import lru_cache
+from typing import TYPE_CHECKING, AsyncIterator
 
 from loguru import logger
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from doc_intel_rag.config import Settings, get_settings
+
+if TYPE_CHECKING:
+    pass
+
+
+def _get_llm_client(settings: Settings) -> "object":
+    """Return a cached AsyncOpenAI client for the configured LLM endpoint."""
+    from openai import AsyncOpenAI
+    return AsyncOpenAI(
+        api_key=settings.mesh_api_key,
+        base_url=settings.mesh_api_base_url,
+    )
 from doc_intel_rag.generation.citation_formatter import build_source_index, format_bibliography
 from doc_intel_rag.generation.context_builder import build_context_text, build_messages
 from doc_intel_rag.generation.prompt_templates import render_system, render_user
@@ -73,10 +86,7 @@ async def stream_generate(
 
     from openai import AsyncOpenAI
 
-    client = AsyncOpenAI(
-        api_key=cfg.mesh_api_key,
-        base_url=cfg.mesh_api_base_url,
-    )
+    client = _get_llm_client(cfg)
 
     try:
         stream = await client.chat.completions.create(
