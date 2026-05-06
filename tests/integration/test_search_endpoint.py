@@ -73,7 +73,7 @@ def test_search_returns_correct_schema(client: TestClient):
             with patch("doc_intel_rag.api.routes.search.get_vector_store", return_value=lambda: mock_vs):
                 with patch("doc_intel_rag.api.routes.search.get_reranker", return_value=lambda: mock_reranker):
                     resp = client.post(
-                        "/search",
+                        "/v1/search",
                         json={"query": "test query", "top_k": 5, "top_n": 3},
                         headers={"X-API-Key": ""},
                     )
@@ -83,7 +83,7 @@ def test_search_returns_correct_schema(client: TestClient):
 
 def test_search_groundedness_field_present(client: TestClient):
     resp = client.post(
-        "/search",
+        "/v1/search",
         json={"query": "x", "top_k": 1, "top_n": 1},
         headers={"X-API-Key": ""},
     )
