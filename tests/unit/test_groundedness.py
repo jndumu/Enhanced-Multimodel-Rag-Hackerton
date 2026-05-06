@@ -25,9 +25,11 @@ def test_empty_chunks_returns_zero():
     assert score_groundedness(emb, []) == 0.0
 
 
-def test_zero_query_embedding_returns_zero():
+def test_zero_query_embedding_uses_chunk_scores():
+    # query_embedding is reserved for future cosine-sim use; score is chunk-score-based
     chunks = [_make_chunk(0.9)]
-    assert score_groundedness([0.0, 0.0, 0.0], chunks) == 0.0
+    score = score_groundedness([0.0, 0.0, 0.0], chunks)
+    assert 0.0 < score <= 1.0, f"Expected positive score from high-scoring chunk, got {score}"
 
 
 def test_high_score_chunks_above_threshold():
