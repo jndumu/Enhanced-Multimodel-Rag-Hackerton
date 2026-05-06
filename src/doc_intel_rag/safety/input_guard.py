@@ -121,15 +121,20 @@ class InputGuard:
     def _check_injection_rules(self, text: str) -> bool:
         return any(p.search(text) for p in _INJECTION_PATTERNS)
 
-    async def _check_injection_llm(self, text: str) -> bool:
-        """LLM-based injection check — only called when rules don't fire."""
-        try:
+    def _get_llm_client(self) -> "object":
+        if not hasattr(self, "_llm_client") or self._llm_client is None:  # type: ignore[has-type]
             from openai import AsyncOpenAI
-            client = AsyncOpenAI(
+            self._llm_client: "object" = AsyncOpenAI(
                 api_key=self._settings.mesh_api_key,
                 base_url=self._settings.mesh_api_base_url,
             )
-            response = await client.chat.completions.create(
+        return self._llm_client
+
+    async def _check_injection_llm(self, text: str) -> bool:
+        """LLM-based injection check — only called when rules don't fire."""
+        try:
+            client = self._get_llm_client()
+            response = await client.chat.completions.create(  # type: ignore[attr-defined]
                 model=self._settings.mesh_llm_model,
                 messages=[
                     {
