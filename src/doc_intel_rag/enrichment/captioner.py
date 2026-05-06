@@ -77,6 +77,16 @@ async def enrich_chunks(
 class _Captioner:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._client: "object | None" = None
+
+    def _get_client(self) -> "object":
+        if self._client is None:
+            from openai import AsyncOpenAI
+            self._client = AsyncOpenAI(
+                api_key=self._settings.mesh_api_key,
+                base_url=self._settings.mesh_api_base_url,
+            )
+        return self._client
 
     @retry(
         retry=retry_if_exception_type(Exception),
@@ -85,17 +95,12 @@ class _Captioner:
         reraise=False,
     )
     async def enrich(self, chunk: Chunk) -> None:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(
-            api_key=self._settings.mesh_api_key,
-            base_url=self._settings.mesh_api_base_url,
-        )
+        client = self._get_client()
 
         prompt = self._build_prompt(chunk)
         messages = self._build_messages(chunk, prompt)
 
-        response = await client.chat.completions.create(
+        response = await client.chat.completions.create(  # type: ignore[attr-defined]
             model=self._settings.mesh_llm_model,
             response_format={"type": "json_object"},
             messages=messages,
