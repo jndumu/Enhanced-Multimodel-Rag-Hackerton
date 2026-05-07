@@ -61,14 +61,45 @@ resource "aws_ecs_task_definition" "main" {
 
       # Static configuration environment variables
       environment = [
-        { name = "APP_ENV", value = var.environment },
-        { name = "APP_PORT", value = tostring(var.container_port) },
-        { name = "LOG_LEVEL", value = "INFO" },
-        { name = "WORKERS", value = "1" },
-        { name = "MAX_UPLOAD_SIZE_MB", value = "50" },
-        { name = "ENABLE_METRICS", value = "true" },
-        { name = "CORS_ORIGINS", value = "*" },
-        { name = "PROJECT_NAME", value = var.project },
+        # LLM + embeddings (Requesty — OpenAI-compatible cloud proxy)
+        { name = "MESH_API_BASE_URL",      value = "https://router.requesty.ai/v1" },
+        { name = "MESH_LLM_MODEL",         value = "meta-llama/llama-3.2-3b-instruct" },
+        { name = "MESH_EMBEDDING_MODEL",   value = "nomic-embed-text" },
+        { name = "MESH_EMBEDDING_DIM",     value = "768" },
+        # Vision (disabled — no Ollama in ECS)
+        { name = "VISION_ENABLED",         value = "false" },
+        # Document parsing
+        { name = "GLMOCR_BACKEND",         value = "local" },
+        # Vector DB
+        { name = "QDRANT_COLLECTION",      value = "doc_intel" },
+        # Cache (Redis optional — app degrades gracefully without it)
+        { name = "REDIS_URL",              value = "redis://localhost:6379" },
+        # Reranker
+        { name = "RERANKER_BACKEND",       value = "cohere" },
+        # Safety
+        { name = "SAFETY_PII_ENABLED",     value = "true" },
+        { name = "SAFETY_INJECTION_ENABLED", value = "true" },
+        { name = "SAFETY_OUTPUT_FAITHFULNESS", value = "true" },
+        { name = "SAFETY_TOXICITY_ENABLED", value = "true" },
+        { name = "SAFETY_BLOCK_ON_PII",    value = "false" },
+        # Ingestion
+        { name = "ENRICHMENT_ENABLED",     value = "false" },
+        { name = "MAX_CHUNK_TOKENS",       value = "512" },
+        { name = "CHUNK_OVERLAP_TOKENS",   value = "64" },
+        { name = "INGEST_BATCH_SIZE",      value = "64" },
+        # Groundedness + fallback
+        { name = "FALLBACK_ENABLED",       value = "true" },
+        { name = "GROUNDEDNESS_THRESHOLD", value = "0.45" },
+        { name = "TAVILY_MAX_RESULTS",     value = "5" },
+        # API
+        { name = "API_KEYS",               value = "[]" },
+        { name = "CORS_ORIGINS",           value = "[\"*\"]" },
+        { name = "RATE_LIMIT_PER_MINUTE",  value = "60" },
+        { name = "STREAMING_ENABLED",      value = "true" },
+        # Observability
+        { name = "LOG_LEVEL",              value = "INFO" },
+        { name = "LOG_JSON",               value = "true" },
+        { name = "OTEL_SERVICE_NAME",      value = var.project },
       ]
 
       # Secrets injected from Secrets Manager at task startup
@@ -152,7 +183,7 @@ resource "aws_ecs_service" "main" {
   network_configuration {
     subnets          = var.private_subnet_ids
     security_groups  = [var.ecs_sg_id]
-    assign_public_ip = false
+    assign_public_ip = true  # required for Fargate in public subnets without NAT gateway
   }
 
   load_balancer {
