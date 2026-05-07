@@ -137,6 +137,124 @@ Documents  (PDF · DOCX · PPTX · HTML · Markdown)
 
 ---
 
+## Project Structure
+
+```
+doc-intel-rag/
+├── src/doc_intel_rag/
+│   ├── config.py                    # Pydantic-settings v2 — single source of truth
+│   ├── logging_config.py            # Loguru + stdlib interception + OTel
+│   ├── exceptions.py                # Full domain exception hierarchy (15 classes)
+│   │
+│   ├── parsing/                     # Document ingestion layer
+│   │   ├── pipeline.py              # DocumentParser: PDF/DOCX/PPTX/HTML/Markdown + OCR
+│   │   ├── entity_types.py          # 35 EntityLabel enum + modality mapping
+│   │   ├── post_processor.py        # ParseResult → structured Markdown
+│   │   ├── graph_extractor.py       # Vision LLM → NetworkX DiGraph + spaCy NER
+│   │   └── cross_ref_linker.py      # "see Figure 3" → chunk_id resolution
+│   │
+│   ├── chunking/
+│   │   ├── schemas.py               # Chunk dataclass, ChunkModality enum, BBox
+│   │   ├── document_chunker.py      # Atomic + text accumulation strategy, breadcrumbs
+│   │   └── semantic_merger.py       # Merge tiny adjacent chunks (cosine > 0.85)
+│   │
+│   ├── enrichment/
+│   │   ├── captioner.py             # Per-modality LLM vision captions (client cached)
+│   │   ├── formula_enricher.py      # pylatexenc validation + verbal LLM description
+│   │   ├── concept_extractor.py     # spaCy NER → concept_tags per chunk
+│   │   └── graph_enricher.py        # Edge list + centrality + LLM summary
+│   │
+│   ├── ingestion/
+│   │   ├── embedder.py              # Dense 768-dim + sparse BM25 (2^17) + Redis cache
+│   │   ├── vector_store.py          # QdrantDocumentStore: 3 vectors, RRF fusion
+│   │   ├── graph_embedder.py        # node2vec → 128-dim graph_dense vector
+│   │   ├── graph_store.py           # In-memory NetworkX GraphStore + Neo4j export
+│   │   └── cache.py                 # EmbeddingCache + QueryCache (Redis async)
+│   │
+│   ├── retrieval/
+│   │   ├── semantic_router.py       # LLM → 7 QueryIntent classes (client cached)
+│   │   ├── hybrid_searcher.py       # Prefetch + RRF fusion + 2-hop graph traversal
+│   │   ├── reranker.py              # Cohere / Jina / OpenAI cross-encoder (immutable)
+│   │   ├── groundedness.py          # Weighted chunk-score groundedness metric
+│   │   └── web_fallback.py          # Tavily search → ScoredChunk list
+│   │
+│   ├── generation/
+│   │   ├── generator.py             # Streaming SSE generation (LLM client cached)
+│   │   ├── context_builder.py       # Multimodal message assembly
+│   │   ├── prompt_templates.py      # Jinja2 system + user templates
+│   │   └── citation_formatter.py    # [Source N] inline markers + bibliography
+│   │
+│   ├── safety/
+│   │   ├── schemas.py               # SafetyResult, OutputGuardResult, GuardrailViolation
+│   │   ├── input_guard.py           # PII → injection → content classification
+│   │   ├── output_guard.py          # NLI faithfulness + Detoxify toxicity
+│   │   ├── phi_detector.py          # Presidio PII detect-and-redact
+│   │   └── rate_limiter.py          # slowapi per-IP rate limiting
+│   │
+│   ├── api/
+│   │   ├── app.py                   # FastAPI factory + lifespan + exception handlers
+│   │   ├── middleware.py            # RequestIDMiddleware + security headers
+│   │   ├── dependencies.py          # Singleton DI (embedder, vector_store, reranker…)
+│   │   ├── schemas.py               # All Pydantic v2 request/response models
+│   │   └── routes/
+│   │       ├── health.py            # GET /health
+│   │       ├── ingest.py            # POST /v1/ingest, /v1/ingest/file
+│   │       ├── search.py            # POST /v1/search
+│   │       ├── generate.py          # POST /v1/generate (SSE or JSON)
+│   │       ├── graph.py             # GET /v1/graph/{doc_id}
+│   │       └── admin.py             # GET /v1/admin/stats, POST /v1/admin/purge-cache
+│   │
+│   └── utils/
+│       ├── token_utils.py           # tiktoken cl100k_base helpers
+│       ├── image_utils.py           # Base64 image encode/decode helpers
+│       ├── pdf_utils.py             # PyMuPDF page crop helpers
+│       └── async_utils.py           # Async utilities
+│
+├── tests/
+│   ├── conftest.py                  # Sets DOC_INTEL_SKIP_VALIDATION=1 for all tests
+│   ├── unit/
+│   │   ├── test_chunker.py          # 7 tests — chunking logic
+│   │   ├── test_groundedness.py     # 5 tests — score formula
+│   │   ├── test_graph_extractor.py  # 5 tests — graph extraction + spaCy NER
+│   │   └── test_safety_input.py     # 9 tests — PII, injection, content classification
+│   └── integration/
+│       ├── test_ingest_pipeline.py  # Mocked document parse + chunk + embed
+│       ├── test_search_endpoint.py  # FastAPI TestClient, mocked dependencies
+│       └── test_generate_endpoint.py# FastAPI TestClient, SSE + non-streaming
+│
+├── scripts/
+│   ├── parse.py                     # CLI: parse document → Markdown + JSON
+│   ├── ingest.py                    # CLI: ingest document into Qdrant
+│   ├── search.py                    # CLI: interactive search REPL
+│   ├── serve.py                     # CLI: start API server
+│   ├── warmup.py                    # CLI: pre-load models before first ingest
+│   └── inject_github_secrets.py     # Encrypt + push .env → GitHub Actions Secrets
+│
+├── docker/
+│   ├── Dockerfile                   # CPU multi-stage build (builder + runtime)
+│   ├── Dockerfile.gpu               # CUDA 12.4 variant
+│   └── docker-compose.yml           # app + qdrant + redis + neo4j + visualiser + jaeger
+│
+├── deploy/
+│   ├── aws/
+│   │   ├── deploy.sh                # ECS Fargate deployment script
+│   │   └── task-definition.json     # ECS task definition
+│   ├── ARCHITECTURE.md              # 12-section enterprise architecture diagrams
+│   └── DEPLOYMENT.md                # Step-by-step deployment guide
+│
+├── notebooks/
+│   └── explore_pipeline.ipynb       # End-to-end demo: parse → chunk → embed → search
+│
+├── data/                            # Sample documents for testing
+├── .env.example                     # Complete environment variable reference
+├── .github/workflows/
+│   └── deploy-ecs.yml               # CI/CD: test → build → push ECR → deploy ECS
+├── CLAUDE.md                        # Claude Code project guide
+└── pyproject.toml                   # uv project config + all ~50 dependencies
+```
+
+---
+
 ## Quick Start
 
 ### 1. Prerequisites
