@@ -1,29 +1,24 @@
 output "vpc_id" {
-  description = "ID of the VPC"
-  value       = aws_vpc.main.id
+  description = "ID of the VPC used for deployment"
+  value       = data.aws_vpc.default.id
 }
 
 output "public_subnet_ids" {
-  description = "List of public subnet IDs"
-  value       = [for s in aws_subnet.public : s.id]
+  description = "Subnet IDs for ALB (default VPC subnets)"
+  value       = data.aws_subnets.default.ids
 }
 
 output "private_subnet_ids" {
-  description = "List of private subnet IDs"
-  value       = [for s in aws_subnet.private : s.id]
+  description = "Subnet IDs for ECS tasks (default VPC subnets)"
+  value       = data.aws_subnets.default.ids
 }
 
 output "alb_sg_id" {
-  description = "Security group ID for the ALB"
+  description = "Security group ID for the Application Load Balancer"
   value       = aws_security_group.alb.id
 }
 
 output "ecs_sg_id" {
-  description = "Security group ID for ECS tasks"
+  description = "Security group ID for ECS Fargate tasks"
   value       = aws_security_group.ecs.id
-}
-
-output "nat_gateway_ip" {
-  description = "Elastic IP address of the NAT Gateway"
-  value       = aws_eip.nat.public_ip
 }

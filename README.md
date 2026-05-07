@@ -25,32 +25,42 @@ streams cited answers, and falls back to live web search — with enterprise saf
 
 ## Live Deployment
 
-| | URL |
-|---|---|
-| **API + Swagger** | http://doc-intel-rag-alb-1457953429.us-east-1.elb.amazonaws.com/docs |
-| **Health** | http://doc-intel-rag-alb-1457953429.us-east-1.elb.amazonaws.com/health |
-| **Metrics** | http://doc-intel-rag-alb-1457953429.us-east-1.elb.amazonaws.com/metrics |
+| Endpoint | URL | Status |
+|---|---|---|
+| **API + Swagger UI** | [/docs](http://doc-intel-rag-alb-1457953429.us-east-1.elb.amazonaws.com/docs) | ![Health](https://img.shields.io/badge/status-live-brightgreen?style=flat-square) |
+| **Health check** | [/health](http://doc-intel-rag-alb-1457953429.us-east-1.elb.amazonaws.com/health) | ![Health](https://img.shields.io/badge/status-live-brightgreen?style=flat-square) |
+| **Prometheus metrics** | [/metrics](http://doc-intel-rag-alb-1457953429.us-east-1.elb.amazonaws.com/metrics) | ![Health](https://img.shields.io/badge/status-live-brightgreen?style=flat-square) |
 
-Hosted on AWS ECS Fargate (us-east-1) behind an Application Load Balancer.
+**Base URL:** `http://doc-intel-rag-alb-1457953429.us-east-1.elb.amazonaws.com`
+
+Hosted on **AWS ECS Fargate** (us-east-1) behind an Application Load Balancer.  
+Infrastructure provisioned and managed by **Terraform** (state in S3 + DynamoDB lock).
 
 ---
 
 ## What Makes This Different
 
-| Capability | Standard RAG | doc-intel-rag |
-|---|:---:|:---:|
-| Text extraction | ✓ | ✓ |
-| Layout-aware parsing (tables, formulas, figures) | Partial | ✓ 35 entity types |
-| Knowledge graph from diagrams + text | ✗ | ✓ NetworkX + Neo4j |
-| Cross-reference linking ("see Figure 3" → chunk) | ✗ | ✓ |
-| Query intent routing (7 classes) | ✗ | ✓ |
-| Three-vector hybrid search (dense + sparse + graph) | ✗ | ✓ |
-| Groundedness scoring + live web fallback | ✗ | ✓ Tavily |
-| Streaming SSE generation | ✗ | ✓ |
-| Redis embedding + query cache | ✗ | ✓ |
-| NLI faithfulness + Detoxify toxicity filtering | ✗ | ✓ |
-| OpenTelemetry traces + Prometheus metrics | ✗ | ✓ |
-| API-key auth + per-key rate limiting | ✗ | ✓ |
+| Capability | Standard RAG | doc-intel-rag | Stack |
+|---|:---:|:---:|---|
+| Text extraction | ✓ | ✓ | PyMuPDF, python-docx, python-pptx |
+| Layout-aware parsing (tables, formulas, figures) | Partial | ✓ | 35 entity types via PP-DocLayout-V3 |
+| OCR for scanned pages | ✗ | ✓ | moondream vision model (Ollama) |
+| Image / chart captioning | ✗ | ✓ | moondream via OpenAI-compatible API |
+| Knowledge graph from diagrams + text | ✗ | ✓ | NetworkX DiGraph + optional Neo4j |
+| Cross-reference linking ("see Figure 3" → chunk) | ✗ | ✓ | cross_ref_linker.py |
+| Query intent routing (7 classes) | ✗ | ✓ | llama3.2:1b via Ollama |
+| Three-vector hybrid search | ✗ | ✓ | Qdrant: dense + BM25 sparse + graph |
+| Groundedness scoring + web fallback | ✗ | ✓ | Tavily Search API |
+| Cross-encoder reranking | ✗ | ✓ | Cohere Rerank 3.5 |
+| Streaming SSE generation | ✗ | ✓ | FastAPI + Server-Sent Events |
+| Redis embedding + query cache | ✗ | ✓ | TTL: embeddings 24h, queries 1h |
+| PII detection + redaction | ✗ | ✓ | Microsoft Presidio |
+| Prompt injection detection | ✗ | ✓ | 13 regex patterns + LLM classifier |
+| NLI faithfulness scoring | ✗ | ✓ | deberta-v3-base cross-encoder |
+| Toxicity filtering | ✗ | ✓ | Detoxify |
+| OpenTelemetry traces + Prometheus metrics | ✗ | ✓ | Jaeger + /metrics endpoint |
+| API-key auth + rate limiting | ✗ | ✓ | X-API-Key header + slowapi |
+| Terraform IaC | ✗ | ✓ | 7 modules, S3 state, auto-scaling |
 
 ---
 
