@@ -247,9 +247,10 @@ class DocumentParser:
                         {
                             "type": "text",
                             "text": (
-                                "This is a scanned document page. "
-                                "Extract ALL text exactly as it appears, preserving "
-                                "paragraph breaks. Return only the extracted text."
+                                "Read this document page and transcribe every word of text "
+                                "you can see, in reading order (top to bottom, left to right). "
+                                "Include headings, body text, captions, and labels. "
+                                "Do not describe the image — output the raw text only."
                             ),
                         },
                         {
