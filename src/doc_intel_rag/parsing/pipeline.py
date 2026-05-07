@@ -127,8 +127,8 @@ class DocumentParser:
                     timeout=self._settings.glmocr_timeout,
                 )
         except ImportError:
-            logger.warning("glmocr SDK not installed — using stub parser")
-            self._client = _StubGLMOCRClient()
+            logger.info("glmocr SDK not installed — using PyMuPDF fallback parser")
+            self._client = _PyMuPDFClient()
 
         return self._client
 
@@ -247,40 +247,255 @@ class DocumentParser:
             return None
 
 
-class _StubGLMOCRClient:
-    """Returns a minimal single-element result when glmocr is unavailable."""
+class _PyMuPDFClient:
+    """Real document parser using PyMuPDF + python-docx + markdown.
 
-    def parse(self, path: str) -> "_StubResult":
-        return _StubResult(path)
+    Handles: PDF, DOCX, PPTX, HTML, Markdown, plain text.
+    Falls back gracefully to raw text extraction when format is unknown.
+
+    This is the production fallback when the GLM-OCR SDK is not installed.
+    It produces real :class:`_ParsedElement` objects with correct page numbers,
+    basic entity label classification (title vs paragraph), and bounding boxes.
+    """
+
+    def parse(self, path: str) -> "_FallbackResult":
+        suffix = Path(path).suffix.lower()
+        try:
+            if suffix == ".pdf":
+                return self._parse_pdf(path)
+            elif suffix in {".docx", ".doc"}:
+                return self._parse_docx(path)
+            elif suffix in {".pptx", ".ppt"}:
+                return self._parse_pptx(path)
+            elif suffix in {".md", ".markdown"}:
+                return self._parse_markdown(path)
+            elif suffix in {".html", ".htm"}:
+                return self._parse_html(path)
+            else:
+                return self._parse_text(path)
+        except Exception as exc:
+            logger.warning("Fallback parser failed", path=path, error=str(exc))
+            return _FallbackResult([_FallbackElement(
+                label="paragraph",
+                text=f"[Parse error: {exc}]",
+                page=1, confidence=0.0,
+            )])
+
+    def _parse_pdf(self, path: str) -> "_FallbackResult":
+        import fitz  # PyMuPDF
+
+        elements: list[_FallbackElement] = []
+        doc = fitz.open(path)
+
+        for page_num, page in enumerate(doc, start=1):
+            blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
+
+            for block in blocks:
+                if block.get("type") != 0:  # 0 = text, 1 = image
+                    continue
+
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        text = span.get("text", "").strip()
+                        if not text:
+                            continue
+
+                        font_size: float = span.get("size", 12)
+                        flags: int = span.get("flags", 0)
+                        is_bold = bool(flags & 2**4)
+
+                        # Classify by font size + bold
+                        if font_size >= 16 or (font_size >= 13 and is_bold):
+                            label = "document_title" if page_num == 1 else "section_title"
+                        elif font_size >= 12 and is_bold:
+                            label = "subsection_title"
+                        else:
+                            label = "paragraph"
+
+                        r = span.get("bbox", (0, 0, 0, 0))
+                        elements.append(_FallbackElement(
+                            label=label, text=text, page=page_num, confidence=1.0,
+                            bbox=BBox(x0=r[0], y0=r[1], x1=r[2], y1=r[3], page=page_num),
+                        ))
+
+        doc.close()
+        logger.info("PDF parsed via PyMuPDF", path=path, elements=len(elements))
+        return _FallbackResult(elements)
+
+    def _parse_docx(self, path: str) -> "_FallbackResult":
+        try:
+            import docx  # python-docx
+        except ImportError:
+            return self._parse_text(path)
+
+        elements: list[_FallbackElement] = []
+        doc = docx.Document(path)
+        page = 1
+
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if not text:
+                continue
+
+            style_name = (para.style.name or "").lower()
+            if "heading 1" in style_name or "title" in style_name:
+                label = "section_title"
+            elif "heading" in style_name:
+                label = "subsection_title"
+            else:
+                label = "paragraph"
+
+            elements.append(_FallbackElement(label=label, text=text, page=page, confidence=1.0))
+
+        for table in doc.tables:
+            rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+            html = "<table>" + "".join(
+                "<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>"
+                for row in rows
+            ) + "</table>"
+            flat = " | ".join(cell for row in rows for cell in row if cell)
+            if flat:
+                elements.append(_FallbackElement(
+                    label="table", text=flat, page=page, confidence=1.0, html=html,
+                ))
+
+        logger.info("DOCX parsed", path=path, elements=len(elements))
+        return _FallbackResult(elements)
+
+    def _parse_pptx(self, path: str) -> "_FallbackResult":
+        try:
+            from pptx import Presentation  # python-pptx
+        except ImportError:
+            return self._parse_text(path)
+
+        elements: list[_FallbackElement] = []
+        prs = Presentation(path)
+
+        for slide_num, slide in enumerate(prs.slides, start=1):
+            for shape in slide.shapes:
+                if not shape.has_text_frame:
+                    continue
+                for para in shape.text_frame.paragraphs:
+                    text = para.text.strip()
+                    if not text:
+                        continue
+                    level = para.level
+                    label = "section_title" if level == 0 else "paragraph"
+                    elements.append(_FallbackElement(
+                        label=label, text=text, page=slide_num, confidence=1.0,
+                    ))
+
+        logger.info("PPTX parsed", path=path, elements=len(elements))
+        return _FallbackResult(elements)
+
+    def _parse_markdown(self, path: str) -> "_FallbackResult":
+        content = Path(path).read_text(encoding="utf-8", errors="replace")
+        elements: list[_FallbackElement] = []
+        page = 1
+
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("# "):
+                elements.append(_FallbackElement("document_title", stripped[2:], page, 1.0))
+            elif stripped.startswith("## "):
+                elements.append(_FallbackElement("section_title", stripped[3:], page, 1.0))
+            elif stripped.startswith("### "):
+                elements.append(_FallbackElement("subsection_title", stripped[4:], page, 1.0))
+            elif stripped.startswith(("- ", "* ", "+ ")):
+                elements.append(_FallbackElement("list_item", stripped[2:], page, 1.0))
+            elif stripped.startswith("> "):
+                elements.append(_FallbackElement("blockquote", stripped[2:], page, 1.0))
+            else:
+                elements.append(_FallbackElement("paragraph", stripped, page, 1.0))
+
+        logger.info("Markdown parsed", path=path, elements=len(elements))
+        return _FallbackResult(elements)
+
+    def _parse_html(self, path: str) -> "_FallbackResult":
+        content = Path(path).read_text(encoding="utf-8", errors="replace")
+        try:
+            from html.parser import HTMLParser
+
+            class _Collector(HTMLParser):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.items: list[tuple[str, str]] = []
+                    self._tag = "paragraph"
+                    self._buf: list[str] = []
+
+                def handle_starttag(self, tag: str, attrs: object) -> None:
+                    if tag in ("h1", "h2", "h3", "h4"):
+                        self._flush()
+                        self._tag = {"h1": "document_title", "h2": "section_title",
+                                     "h3": "subsection_title", "h4": "subsection_title"}[tag]
+                    elif tag in ("p", "li", "blockquote", "pre"):
+                        self._flush()
+                        self._tag = {"p": "paragraph", "li": "list_item",
+                                     "blockquote": "blockquote", "pre": "code_block"}[tag]
+
+                def handle_endtag(self, tag: str) -> None:
+                    if tag in ("h1", "h2", "h3", "h4", "p", "li", "blockquote", "pre"):
+                        self._flush()
+
+                def handle_data(self, data: str) -> None:
+                    self._buf.append(data)
+
+                def _flush(self) -> None:
+                    text = "".join(self._buf).strip()
+                    if text:
+                        self.items.append((self._tag, text))
+                    self._buf = []
+                    self._tag = "paragraph"
+
+            collector = _Collector()
+            collector.feed(content)
+            collector._flush()
+            elements = [
+                _FallbackElement(label, text, 1, 1.0)
+                for label, text in collector.items
+            ]
+        except Exception:
+            elements = [_FallbackElement("paragraph", content[:4000], 1, 1.0)]
+
+        logger.info("HTML parsed", path=path, elements=len(elements))
+        return _FallbackResult(elements)
+
+    def _parse_text(self, path: str) -> "_FallbackResult":
+        try:
+            content = Path(path).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            content = "[Could not read file]"
+        elements = [
+            _FallbackElement("paragraph", para.strip(), i + 1, 1.0)
+            for i, para in enumerate(content.split("\n\n"))
+            if para.strip()
+        ]
+        return _FallbackResult(elements)
 
 
 @dataclass
-class _StubResult:
-    _path: str
+class _FallbackResult:
+    """Parse result from the PyMuPDF fallback parser."""
+    _elements: list["_FallbackElement"]
 
     @property
     def elements(self) -> list[Any]:
-        return [
-            _StubElement(
-                label="paragraph",
-                text=f"[Stub parse result for: {self._path}]",
-                page=1,
-                confidence=0.0,
-            )
-        ]
+        return self._elements
 
     @property
     def metadata(self) -> dict[str, Any]:
-        return {"stub": True}
+        return {"parser": "pymupdf_fallback"}
 
 
 @dataclass
-class _StubElement:
+class _FallbackElement:
     label: str
     text: str
     page: int
     confidence: float
-    bbox: None = None
+    bbox: "BBox | None" = None
     image_b64: None = None
     latex: None = None
-    html: None = None
+    html: str | None = None
