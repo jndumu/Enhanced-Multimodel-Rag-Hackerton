@@ -91,6 +91,25 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
+      - name: Inject secrets into task definition
+        env:
+          MESH_API_KEY: ${{ secrets.MESH_API_KEY }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+        run: |
+          jq '.containerDefinitions[0].environment += [
+            {"name": "MESH_API_KEY",    "value": env.MESH_API_KEY},
+            {"name": "QDRANT_URL",      "value": env.QDRANT_URL},
+            {"name": "QDRANT_API_KEY",  "value": env.QDRANT_API_KEY},
+            {"name": "COHERE_API_KEY",  "value": env.COHERE_API_KEY},
+            {"name": "TAVILY_API_KEY",  "value": env.TAVILY_API_KEY},
+            {"name": "JINA_API_KEY",    "value": env.JINA_API_KEY}
+          ]' deploy/aws/task-definition.json > /tmp/task-def-patched.json
+          mv /tmp/task-def-patched.json deploy/aws/task-definition.json
+
       - name: Render ECS task definition
         id: render-task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
