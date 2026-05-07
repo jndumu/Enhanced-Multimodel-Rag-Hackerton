@@ -4,7 +4,7 @@ FROM python:3.12-slim AS builder
 RUN pip install --no-cache-dir uv
 
 WORKDIR /build
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
 RUN uv pip install --system --no-cache .
