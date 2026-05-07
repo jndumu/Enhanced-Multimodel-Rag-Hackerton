@@ -88,6 +88,13 @@ class _Captioner:
             )
         return self._client
 
+    def _model_for(self, chunk: Chunk) -> str:
+        """Return the right model: vision model for image chunks, text LLM for others."""
+        needs_vision = chunk.raw_image_b64 is not None and self._settings.vision_enabled
+        if needs_vision:
+            return self._settings.vision_model
+        return self._settings.mesh_llm_model
+
     @retry(
         retry=retry_if_exception_type(Exception),
         wait=wait_exponential(multiplier=1, min=2, max=20),
@@ -99,9 +106,10 @@ class _Captioner:
 
         prompt = self._build_prompt(chunk)
         messages = self._build_messages(chunk, prompt)
+        model = self._model_for(chunk)
 
         response = await client.chat.completions.create(  # type: ignore[attr-defined]
-            model=self._settings.mesh_llm_model,
+            model=model,
             response_format={"type": "json_object"},
             messages=messages,
             max_tokens=1024,

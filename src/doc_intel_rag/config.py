@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     mesh_embedding_model: str = "mesh-text-embedding-3-large"
     mesh_embedding_dim: int = 3072
 
+    # === Vision model (OCR + image enrichment) ===
+    vision_model: str = "llava"  # Ollama vision model for OCR and image captioning
+    vision_enabled: bool = True  # Set false to skip vision enrichment
+
     # === GLM-OCR / Layout Detection ===
     glmocr_api_key: str = ""
     glmocr_backend: Literal["cloud", "local"] = "cloud"

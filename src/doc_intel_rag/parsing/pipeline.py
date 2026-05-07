@@ -152,6 +152,11 @@ class DocumentParser:
         )
 
         elements = self._convert_elements(raw_result, raw_bytes)
+
+        # OCR pass: find scanned/image-heavy pages and extract text via vision model
+        if resolved_path.endswith(".pdf") and self._settings.vision_enabled:
+            elements = await self._ocr_scanned_pages(raw_bytes, elements)
+
         page_count = max((e.page for e in elements), default=1)
 
         logger.info(
@@ -168,6 +173,98 @@ class DocumentParser:
             elements=elements,
             raw_metadata=getattr(raw_result, "metadata", {}),
         )
+
+    async def _ocr_scanned_pages(
+        self, raw_bytes: bytes, elements: list[ParsedElement]
+    ) -> list[ParsedElement]:
+        """Run vision-model OCR on PDF pages that have images but no extracted text.
+
+        Called automatically for PDF files when ``vision_enabled=True``.
+        Pages that already have text content (from PyMuPDF) are skipped.
+        Pages that are mostly images (scanned documents) are rendered to PNG
+        and sent to the configured ``vision_model`` (default: ``llava``) via
+        the Ollama OpenAI-compatible endpoint.
+        """
+        try:
+            import fitz
+        except ImportError:
+            return elements
+
+        pages_with_text: set[int] = {
+            e.page for e in elements if e.text.strip() and len(e.text) > 30
+        }
+
+        try:
+            doc = fitz.open(stream=raw_bytes, filetype="pdf")
+        except Exception:
+            return elements
+
+        new_elements: list[ParsedElement] = list(elements)
+
+        for page_num_zero, page in enumerate(doc):
+            page_num = page_num_zero + 1
+            if page_num in pages_with_text:
+                continue  # already has text
+
+            # Only process pages that actually have images
+            if not page.get_images(full=False):
+                continue
+
+            try:
+                pix = page.get_pixmap(dpi=200)
+                img_b64 = base64.b64encode(pix.tobytes("png")).decode()
+
+                ocr_text = await self._vision_ocr(img_b64, page_num)
+                if ocr_text and len(ocr_text.strip()) > 10:
+                    new_elements.append(ParsedElement(
+                        label=EntityLabel.PARAGRAPH,
+                        text=ocr_text.strip(),
+                        page=page_num,
+                        confidence=0.75,
+                        raw_image_b64=img_b64,
+                    ))
+                    logger.info("OCR extracted text from page", page=page_num, chars=len(ocr_text))
+            except Exception as exc:
+                logger.debug("OCR failed for page", page=page_num, error=str(exc))
+
+        doc.close()
+        return new_elements
+
+    async def _vision_ocr(self, img_b64: str, page: int) -> str:
+        """Send a page image to the vision model and return extracted text."""
+        try:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(
+                api_key=self._settings.mesh_api_key,
+                base_url=self._settings.mesh_api_base_url,
+            )
+            response = await client.chat.completions.create(
+                model=self._settings.vision_model,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "This is a scanned document page. "
+                                "Extract ALL text exactly as it appears, preserving "
+                                "paragraph breaks. Return only the extracted text."
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{img_b64}"},
+                        },
+                    ],
+                }],
+                max_tokens=2048,
+                temperature=0,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as exc:
+            logger.debug("Vision OCR call failed", page=page, error=str(exc))
+            return ""
 
     async def _load_source(self, file_path: str | Path) -> tuple[bytes, str]:
         """Load raw bytes from a local path or HTTP/HTTPS URL.
