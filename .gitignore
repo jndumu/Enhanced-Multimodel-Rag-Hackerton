@@ -13,3 +13,12 @@ build/
 *.output
 htmlcov/
 .coverage
+
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfvars
+terraform/tfplan
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/crash.log
