@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from doc_intel_rag.api.dependencies import (
     get_embedder, get_graph_store, get_query_cache, get_vector_store, verify_api_key,
@@ -39,10 +39,10 @@ async def ingest_url_or_path(
 
 @router.post("/ingest/file", response_model=IngestResponse)
 async def ingest_file(
-    file: UploadFile,
-    collection: str = "doc_intel",
-    enrich: bool = True,
-    force: bool = False,
+    file: UploadFile = File(..., description="PDF, DOCX, PPTX, HTML, or Markdown file to ingest"),
+    collection: str = Form(default="doc_intel", description="Qdrant collection name"),
+    enrich: bool = Form(default=True, description="Run LLM enrichment on chunks"),
+    force: bool = Form(default=False, description="Re-ingest even if doc_id already exists"),
     api_key: str = Depends(verify_api_key),
     vector_store: object = Depends(get_vector_store),
     embedder: object = Depends(get_embedder),

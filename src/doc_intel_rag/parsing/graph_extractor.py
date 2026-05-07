@@ -72,7 +72,7 @@ class GraphExtractor:
         reraise=False,
     )
     async def extract_from_image(self, image_b64: str, label: EntityLabel) -> nx.DiGraph:
-        """Call Mesh API vision model to extract graph structure from an image."""
+        """Call vision model to extract graph structure from an image."""
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(
@@ -81,8 +81,7 @@ class GraphExtractor:
         )
 
         response = await client.chat.completions.create(
-            model=self._settings.mesh_llm_model,
-            response_format={"type": "json_object"},
+            model=self._settings.vision_model,
             messages=[
                 {
                     "role": "user",
@@ -112,7 +111,7 @@ class GraphExtractor:
 
         import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         doc = await loop.run_in_executor(None, nlp, text[:5000])
 
         entities = {ent.text: ent.label_ for ent in doc.ents}

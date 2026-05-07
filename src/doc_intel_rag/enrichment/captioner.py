@@ -108,13 +108,17 @@ class _Captioner:
         messages = self._build_messages(chunk, prompt)
         model = self._model_for(chunk)
 
-        response = await client.chat.completions.create(  # type: ignore[attr-defined]
-            model=model,
-            response_format={"type": "json_object"},
-            messages=messages,
-            max_tokens=1024,
-            temperature=0,
-        )
+        uses_vision = model == self._settings.vision_model
+        create_kwargs: dict[str, object] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": 1024,
+            "temperature": 0,
+        }
+        if not uses_vision:
+            create_kwargs["response_format"] = {"type": "json_object"}
+
+        response = await client.chat.completions.create(**create_kwargs)  # type: ignore[attr-defined]
 
         raw = response.choices[0].message.content or "{}"
         try:
