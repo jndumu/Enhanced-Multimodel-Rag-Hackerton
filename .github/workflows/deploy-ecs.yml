@@ -35,11 +35,9 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        working-directory: doc-intel-rag
         run: uv sync
 
       - name: Run unit tests
-        working-directory: doc-intel-rag
         env:
           DOC_INTEL_SKIP_VALIDATION: "1"
           MESH_API_KEY: test-key
@@ -85,10 +83,10 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build \
-            -f doc-intel-rag/docker/Dockerfile \
+            -f docker/Dockerfile \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-            doc-intel-rag/
+            .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
@@ -97,7 +95,7 @@ jobs:
         id: render-task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          task-definition: doc-intel-rag/deploy/aws/task-definition.json
+          task-definition: deploy/aws/task-definition.json
           container-name: ${{ env.CONTAINER_NAME }}
           image: ${{ steps.build-image.outputs.image }}
 
@@ -111,7 +109,7 @@ jobs:
 
       - name: Deployment summary
         run: |
-          echo "## ✅ Deployed to ECS Fargate" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployed to ECS Fargate" >> $GITHUB_STEP_SUMMARY
           echo "- **Image**: ${{ steps.build-image.outputs.image }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Cluster**: ${{ env.ECS_CLUSTER }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Service**: ${{ env.ECS_SERVICE }}" >> $GITHUB_STEP_SUMMARY
