@@ -836,6 +836,83 @@ uv run python scripts/warmup.py
 
 ---
 
+## Terraform Infrastructure
+
+All AWS infrastructure is managed as code in `terraform/`. State is stored remotely in S3 with DynamoDB locking — no state files are committed.
+
+```
+terraform/
+├── versions.tf          # AWS provider ~> 5.0, S3 backend
+├── variables.tf         # All inputs (sensitive vars marked sensitive = true)
+├── main.tf              # Module composition
+├── outputs.tf           # ALB URL, Swagger URL, health URL, cluster name
+└── modules/
+    ├── networking/      # Default VPC data source + ALB/ECS security groups
+    ├── iam/             # ecsTaskExecutionRole + ecsTaskRole + least-privilege policies
+    ├── ecr/             # ECR repo + lifecycle policy (keep 10 images)
+    ├── secrets/         # 6 API keys in AWS Secrets Manager (prevent_destroy)
+    ├── alb/             # ALB + target group + HTTP listener + deletion protection
+    ├── ecs/             # Fargate cluster + task def + service + auto-scaling (1–5 tasks)
+    └── monitoring/      # CloudWatch log group + SNS alarms + dashboard
+```
+
+### First-time setup (run once)
+
+```bash
+# 1. Create S3 state bucket + DynamoDB lock table
+bash terraform/scripts/bootstrap.sh
+
+# 2. Create terraform.tfvars with your secrets (never committed)
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
+# Edit with your API keys
+
+# 3. Init and apply
+cd terraform
+terraform init
+terraform apply
+```
+
+### Day-to-day
+
+```bash
+# See what will change before applying
+terraform plan
+
+# Apply changes
+terraform apply
+
+# Check current outputs
+terraform output
+```
+
+### CI/CD integration
+
+Every push to `main` runs the full pipeline:
+1. **Test** — `uv run pytest tests/unit/`
+2. **Build** — Docker image built and pushed to ECR (tagged with `github.sha`)
+3. **Terraform** — `terraform apply` updates infrastructure and rolls out the new image
+
+PRs get a Terraform plan posted as a comment automatically.
+
+### Auto-scaling
+
+The ECS service scales between 1 and 5 tasks based on:
+- CPU > 70% → scale out (60s cooldown)
+- Memory > 80% → scale out (60s cooldown)
+- CPU/Memory < threshold → scale in (300s cooldown)
+
+### Monitoring
+
+CloudWatch alarms send email to `fetinue3@gmail.com` when:
+- ECS CPU > 85% for 10 minutes
+- ECS memory > 85% for 10 minutes
+- ALB 5xx errors > 10 in 5 minutes
+- Healthy host count < 1
+
+Dashboard: [AWS CloudWatch](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=doc-intel-rag-production)
+
+---
+
 ## Development
 
 ```bash
