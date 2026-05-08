@@ -22,3 +22,9 @@ terraform/tfplan
 terraform/*.tfstate
 terraform/*.tfstate.backup
 terraform/crash.log
+
+# Local notes (never committed)
+_local/
+
+# Claude Code instructions (personal — never share)
+CLAUDE.md
