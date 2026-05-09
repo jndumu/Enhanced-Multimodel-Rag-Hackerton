@@ -1,0 +1,131 @@
+name: Scale Up — Restore ECS tasks and start serving traffic
+
+on:
+  workflow_dispatch:
+    inputs:
+      desired_count:
+        description: "Number of ECS tasks to run (1 = minimum, 2 = redundant)"
+        required: false
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+
+env:
+  AWS_REGION:     us-east-1
+  ECS_CLUSTER:    doc-intel-rag-cluster
+  ECS_SERVICE:    doc-intel-rag-service
+  TF_WORKING_DIR: terraform
+  TF_VERSION:     "1.9.8"
+
+jobs:
+  scale-up:
+    name: Restore ECS service
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── Restore ALB if it was destroyed ─────────────────────────────────────
+      - name: Check if ALB exists
+        id: alb_check
+        run: |
+          COUNT=$(aws elbv2 describe-load-balancers \
+            --region $AWS_REGION \
+            --query "length(LoadBalancers[?contains(LoadBalancerName, 'doc-intel-rag')])" \
+            --output text 2>/dev/null || echo "0")
+          echo "alb_exists=$COUNT" >> $GITHUB_OUTPUT
+          echo "ALB count: $COUNT"
+
+      - name: Setup Terraform (ALB restore if needed)
+        if: steps.alb_check.outputs.alb_exists == '0'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform init (ALB restore)
+        if: steps.alb_check.outputs.alb_exists == '0'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -input=false
+
+      - name: Restore ALB with terraform apply
+        if: steps.alb_check.outputs.alb_exists == '0'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_mesh_api_key:   ${{ secrets.MESH_API_KEY }}
+          TF_VAR_qdrant_url:     ${{ secrets.QDRANT_URL }}
+          TF_VAR_qdrant_api_key: ${{ secrets.QDRANT_API_KEY }}
+          TF_VAR_cohere_api_key: ${{ secrets.COHERE_API_KEY }}
+          TF_VAR_tavily_api_key: ${{ secrets.TAVILY_API_KEY }}
+          TF_VAR_jina_api_key:   ${{ secrets.JINA_API_KEY }}
+        run: |
+          echo "ALB not found — restoring via terraform apply..."
+          terraform apply \
+            -target=module.alb \
+            -auto-approve \
+            -input=false
+          echo "ALB restored."
+
+      # ── Start ECS tasks ──────────────────────────────────────────────────────
+      - name: Set ECS desired count
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service  $ECS_SERVICE \
+            --desired-count ${{ inputs.desired_count }} \
+            --region $AWS_REGION \
+            --query "service.{service:serviceName,desired:desiredCount,running:runningCount}" \
+            --output table
+
+      - name: Wait for tasks to become healthy
+        run: |
+          echo "Waiting for ${{ inputs.desired_count }} task(s) to pass health checks..."
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --region $AWS_REGION
+          echo "Service is stable."
+
+      # ── Verify the health endpoint ───────────────────────────────────────────
+      - name: Get ALB URL and verify /health
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --region $AWS_REGION \
+            --query "LoadBalancers[?contains(LoadBalancerName, 'doc-intel-rag')].DNSName" \
+            --output text)
+
+          echo "ALB URL: http://$ALB_DNS"
+          echo ""
+
+          for i in {1..6}; do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://$ALB_DNS/health 2>/dev/null || echo "000")
+            if [ "$STATUS" == "200" ]; then
+              echo "Health check passed (HTTP $STATUS)"
+              echo "ALB_URL=http://$ALB_DNS" >> $GITHUB_ENV
+              break
+            fi
+            echo "Attempt $i: HTTP $STATUS — retrying in 15s..."
+            sleep 15
+          done
+
+      - name: Scale-up summary
+        run: |
+          echo "## Scale-Up Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| ECS tasks | **Running (${{ inputs.desired_count }})** |" >> $GITHUB_STEP_SUMMARY
+          echo "| API | **Live** |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Swagger UI:** ${{ env.ALB_URL }}/docs" >> $GITHUB_STEP_SUMMARY
+          echo "**Health:**     ${{ env.ALB_URL }}/health" >> $GITHUB_STEP_SUMMARY

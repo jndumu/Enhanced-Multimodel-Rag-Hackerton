@@ -1,0 +1,103 @@
+name: Scale Down — Stop ECS tasks to pause billing
+
+on:
+  workflow_dispatch:
+    inputs:
+      destroy_alb:
+        description: "Also destroy the ALB to stop the extra ~$16/month ALB cost? (terraform destroy — takes ~3 min to restore)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+env:
+  AWS_REGION:     us-east-1
+  ECS_CLUSTER:    doc-intel-rag-cluster
+  ECS_SERVICE:    doc-intel-rag-service
+  TF_WORKING_DIR: terraform
+  TF_VERSION:     "1.9.8"
+
+jobs:
+  scale-down:
+    name: Scale ECS to 0 tasks
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── Stop all Fargate tasks (immediate compute cost saving) ───────────────
+      - name: Set ECS desired count to 0
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service  $ECS_SERVICE \
+            --desired-count 0 \
+            --region $AWS_REGION \
+            --query "service.{service:serviceName,desired:desiredCount,running:runningCount}" \
+            --output table
+
+      - name: Wait for tasks to drain
+        run: |
+          echo "Waiting for all tasks to stop..."
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --region $AWS_REGION
+          echo "All tasks stopped. ECS Fargate billing paused."
+
+      # ── Optional: also destroy ALB to stop ~$16/month ALB cost ──────────────
+      - name: Setup Terraform (ALB destroy only)
+        if: ${{ inputs.destroy_alb == 'true' }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform init (ALB destroy)
+        if: ${{ inputs.destroy_alb == 'true' }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -input=false
+
+      - name: Destroy ALB module
+        if: ${{ inputs.destroy_alb == 'true' }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_mesh_api_key:   ${{ secrets.MESH_API_KEY }}
+          TF_VAR_qdrant_url:     ${{ secrets.QDRANT_URL }}
+          TF_VAR_qdrant_api_key: ${{ secrets.QDRANT_API_KEY }}
+          TF_VAR_cohere_api_key: ${{ secrets.COHERE_API_KEY }}
+          TF_VAR_tavily_api_key: ${{ secrets.TAVILY_API_KEY }}
+          TF_VAR_jina_api_key:   ${{ secrets.JINA_API_KEY }}
+        run: |
+          terraform destroy \
+            -target=module.alb \
+            -auto-approve \
+            -input=false
+          echo "ALB destroyed. Full billing stopped."
+
+      - name: Cost summary
+        run: |
+          echo "## Scale-Down Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Status | Monthly cost |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| ECS Fargate tasks | **Stopped (0 tasks)** | \$0 |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.destroy_alb }}" == "true" ]; then
+            echo "| ALB | **Destroyed** | \$0 |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| ALB | Still running | ~\$16/month |" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "| Secrets Manager | Running (6 secrets) | ~\$2.40/month |" >> $GITHUB_STEP_SUMMARY
+          echo "| ECR / CloudWatch / S3 | Running | <\$1/month |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To bring the app back: run the **Scale Up** workflow." >> $GITHUB_STEP_SUMMARY
