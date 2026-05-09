@@ -157,7 +157,7 @@ graph TB
     HybridSearch --> GraphTraversal --> Reranker
     HybridSearch --> Reranker
     Reranker --> Ground
-    Ground -->|"score ≥ 0.45"| CtxBuilder
+    Ground -->|score >= 0.45| CtxBuilder
     Ground -->|"score < 0.45"| WebFB --> CtxBuilder
     CtxBuilder --> Prompt --> Generator --> Citations --> NLI --> Toxicity --> Response
 ```

@@ -80,15 +80,15 @@ graph TB
         Enrich["Enrichment Pipeline\n(captioner · formula · concept · graph)"]
     end
 
-    subgraph Embedding & Storage
+    subgraph EmbStore["Embedding & Storage"]
         DenseEmb["Dense Embedder (Mesh API · 768-dim)"]
-        SparseEmb["Sparse BM25 (feature-hashing · 2¹⁷ buckets)"]
+        SparseEmb["Sparse BM25 (feature-hashing · 2^17 buckets)"]
         GraphEmb["Graph Embedder (node2vec · 128-dim)"]
         Qdrant["Qdrant\n(text_dense + bm25_sparse + graph_dense)"]
         GraphStore["Graph Store\n(NetworkX in-memory + optional Neo4j)"]
     end
 
-    subgraph Retrieval & Generation
+    subgraph RetriGen["Retrieval & Generation"]
         Router["Semantic Router\n(7 intents: factual · analytical · visual...)"]
         Hybrid["Hybrid RRF Searcher\n(dense + sparse + graph · 2-hop traversal)"]
         Reranker["Reranker (Cohere rerank-v3.5 · Jina · OpenAI)"]
@@ -119,8 +119,8 @@ graph TB
     Router --> Hybrid
     Hybrid --> Reranker
     Reranker --> Ground
-    Ground -->|score ≥ 0.45| Generator
-    Ground -->|score < 0.45| WebFB
+    Ground -->|score >= 0.45| Generator
+    Ground -->|score below 0.45| WebFB
     WebFB --> Generator
     Generator --> OutputGuard
     OutputGuard --> Client
