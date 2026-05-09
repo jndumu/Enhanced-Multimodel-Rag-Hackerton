@@ -66,83 +66,82 @@ Infrastructure provisioned and managed by **Terraform** (state in S3 + DynamoDB 
 
 ## Architecture
 
-```
-Documents  (PDF · DOCX · PPTX · HTML · Markdown)
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  PARSING LAYER                                                      │
-│                                                                     │
-│  GLM-OCR + PP-DocLayout-V3  ──►  35 Entity Label Classes            │
-│  └─ graph_extractor.py      ──►  NetworkX DiGraph (nodes + edges)   │
-│  └─ cross_ref_linker.py     ──►  "see Figure 3" resolved to chunk   │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │  ParseResult  +  DiGraph
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  CHUNKING + ENRICHMENT LAYER                                        │
-│                                                                     │
-│  document_chunker.py     tiktoken tokens · atomic boundaries        │
-│                          section_path breadcrumb · 64-token overlap │
-│  semantic_merger.py      merge tiny adjacent chunks (cosine > 0.85) │
-│                                                                     │
-│  captioner.py            Mesh API vision → image · chart · table    │
-│                                           formula · algorithm · code│
-│  concept_extractor.py    spaCy NER → concept_tags per chunk         │
-│  formula_enricher.py     pylatexenc validation + verbal description │
-│  graph_enricher.py       edge list + centrality + Mesh API summary  │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │  list[Chunk]  with  graph_json
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  INGESTION LAYER                                                    │
-│                                                                     │
-│  embedder.py       Dense (Mesh API, 3072-dim)  ←── Redis cache      │
-│                    Sparse BM25 (feature-hashing, 2^17 buckets)      │
-│  graph_embedder.py node2vec → 128-dim graph_dense vector            │
-│                                                                     │
-│  Qdrant  ┌─ text_dense  (3072-dim · COSINE · HNSW)                 │
-│  3 vecs  ├─ bm25_sparse (SparseVectorParams)                        │
-│          └─ graph_dense (128-dim · COSINE)                          │
-│                                                                     │
-│  graph_store.py   NetworkX in-memory  +  optional Neo4j export      │
-│  cache.py         Redis embedding TTL=24h · query TTL=1h            │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  FastAPI REST API  (Auth · CORS · Rate-limit · OTel · Prometheus)   │
-│                                                                     │
-│   POST /v1/search                  POST /v1/generate  (SSE stream)  │
-│         │                                    │                      │
-│   INPUT GUARD ───────────────────────────────┘                     │
-│   Presidio PII redact/block                                         │
-│   Prompt-injection detection (13 patterns + LLM classifier)         │
-│   Content classification: benign / sensitive / off-topic / harmful  │
-│         │                                                           │
-│   SEMANTIC ROUTER                                                   │
-│   factual · analytical · visual · mathematical                      │
-│   code · relational · general  →  adjusts retrieval strategy        │
-│         │                                                           │
-│   HYBRID SEARCHER                                                   │
-│   Prefetch: dense + sparse + graph_dense  →  RRF fusion (rank=60)   │
-│   2-hop graph traversal for relational / analytical intents         │
-│         │                                                           │
-│   RERANKER  (Cohere rerank-v3.5  ·  Jina  ·  OpenAI)               │
-│         │                                                           │
-│   GROUNDEDNESS SCORE                                                │
-│   score < 0.45  →  Tavily web fallback  (chunks tagged "web")       │
-│         │                                                           │
-│         │──── /v1/search returns here                               │
-│         │                                                           │
-│   CONTEXT BUILDER  →  Mesh API streaming generation                 │
-│   [Source N] citations · [Web Source N] for web chunks              │
-│         │                                                           │
-│   OUTPUT GUARD                                                      │
-│   NLI faithfulness (deberta-v3-base) + Detoxify toxicity filter     │
-│         │                                                           │
-│   SSE stream to client  /  JSON response                            │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    Client["Client (curl / SDK / Demo UI)"]
+    App["FastAPI App :8000"]
+    OTel["OpenTelemetry + Prometheus /metrics"]
+
+    subgraph Ingestion
+        Parser["GLM-OCR + PP-DocLayout-V3\n(35 entity classes)"]
+        Chunker["Document-Aware Chunker\n(512 tokens · 64-token overlap)"]
+        GraphEx["Graph Extractor\n(Vision LLM + spaCy NER → DiGraph)"]
+        XRef["Cross-Reference Linker\n('see Figure 3' → chunk_id)"]
+        Enrich["Enrichment Pipeline\n(captioner · formula · concept · graph)"]
+    end
+
+    subgraph Embedding & Storage
+        DenseEmb["Dense Embedder (Mesh API · 768-dim)"]
+        SparseEmb["Sparse BM25 (feature-hashing · 2¹⁷ buckets)"]
+        GraphEmb["Graph Embedder (node2vec · 128-dim)"]
+        Qdrant["Qdrant\n(text_dense + bm25_sparse + graph_dense)"]
+        GraphStore["Graph Store\n(NetworkX in-memory + optional Neo4j)"]
+    end
+
+    subgraph Retrieval & Generation
+        Router["Semantic Router\n(7 intents: factual · analytical · visual...)"]
+        Hybrid["Hybrid RRF Searcher\n(dense + sparse + graph · 2-hop traversal)"]
+        Reranker["Reranker (Cohere rerank-v3.5 · Jina · OpenAI)"]
+        Ground["Groundedness Score\n(weighted cosine · threshold 0.45)"]
+        WebFB["Web Fallback (Tavily Search)"]
+        Generator["LLM Generator\n(Mesh API · streaming SSE)"]
+    end
+
+    subgraph Safety
+        InputGuard["Input Guard\n(Presidio PII · 13-pattern injection detect + LLM · content classify)"]
+        OutputGuard["Output Guard\n(NLI faithfulness deberta-v3 · Detoxify toxicity)"]
+    end
+
+    subgraph Cache
+        Redis["Redis Cache\n(embeddings TTL=24h · queries TTL=1h)"]
+    end
+
+    subgraph Mesh["Mesh API — OpenAI-compatible Gateway"]
+        MeshLLM["meshapi/ → LLM Generation\n(meta-llama/llama-3.2-3b-instruct)"]
+        MeshEmb["meshapi/ → Embeddings\n(nomic-embed-text · 768-dim)"]
+        MeshVis["meshapi/ → Vision Enrichment"]
+    end
+
+    Client --> App
+    App --> OTel
+    App --> InputGuard
+    InputGuard --> Router
+    Router --> Hybrid
+    Hybrid --> Reranker
+    Reranker --> Ground
+    Ground -->|score ≥ 0.45| Generator
+    Ground -->|score < 0.45| WebFB
+    WebFB --> Generator
+    Generator --> OutputGuard
+    OutputGuard --> Client
+
+    App --> Parser
+    Parser --> Chunker --> GraphEx --> XRef --> Enrich
+    Enrich --> DenseEmb --> Qdrant
+    Enrich --> SparseEmb --> Qdrant
+    GraphEx --> GraphEmb --> Qdrant
+    GraphEx --> GraphStore
+
+    Hybrid --> Qdrant
+    Hybrid --> GraphStore
+    DenseEmb --> Redis
+    Hybrid --> Redis
+
+    DenseEmb --> MeshEmb
+    Enrich --> MeshVis
+    Generator --> MeshLLM
+    Reranker --> CohereAPI["Cohere → Rerank API"]
+    WebFB --> TavilyAPI["Tavily → Web Search API"]
 ```
 
 ---
