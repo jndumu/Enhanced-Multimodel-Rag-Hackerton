@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -146,10 +147,30 @@ class DocumentParser:
 
         client = self._get_client()
 
+        # When source is a URL the client receives a local temp file so that
+        # extension-based dispatch (PDF vs DOCX etc.) works correctly.
+        # Detect format from magic bytes so numeric URL paths (e.g. arXiv /pdf/2304.12306)
+        # are still treated as PDF.
         loop = asyncio.get_running_loop()
-        raw_result = await loop.run_in_executor(
-            None, lambda: client.parse(resolved_path)
-        )
+        if resolved_path.startswith(("http://", "https://")):
+            if raw_bytes[:4] == b"%PDF":
+                suffix = ".pdf"
+            elif raw_bytes[:2] == b"PK":
+                url_suffix = Path(resolved_path.split("?")[0]).suffix.lower()
+                suffix = url_suffix if url_suffix in {".pptx", ".xlsx"} else ".docx"
+            else:
+                suffix = Path(resolved_path.split("?")[0]).suffix or ".txt"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(raw_bytes)
+                local_path = tmp.name
+            raw_result = await loop.run_in_executor(
+                None, lambda: client.parse(local_path)
+            )
+            Path(local_path).unlink(missing_ok=True)
+        else:
+            raw_result = await loop.run_in_executor(
+                None, lambda: client.parse(resolved_path)
+            )
 
         elements = self._convert_elements(raw_result, raw_bytes)
 
