@@ -47,32 +47,47 @@ class QdrantDocumentStore:
 
     async def ensure_collection(self, collection: str | None = None) -> None:
         from qdrant_client.models import (
-            Distance, SparseIndexParams, SparseVectorParams, VectorParams, VectorsConfig,
+            Distance, PayloadSchemaType, SparseIndexParams,
+            SparseVectorParams, VectorParams, VectorsConfig,
         )
         client = await self._get_client()
         col = collection or self._settings.qdrant_collection
 
         existing = {c.name for c in (await client.get_collections()).collections}
-        if col in existing:
-            return
+        if col not in existing:
+            await client.create_collection(
+                collection_name=col,
+                vectors_config={
+                    "text_dense": VectorParams(
+                        size=self._settings.mesh_embedding_dim,
+                        distance=Distance.COSINE,
+                    ),
+                    "graph_dense": VectorParams(
+                        size=GRAPH_EMBED_DIM,
+                        distance=Distance.COSINE,
+                    ),
+                },
+                sparse_vectors_config={
+                    "bm25_sparse": SparseVectorParams(index=SparseIndexParams()),
+                },
+            )
+            logger.info("Qdrant collection created", collection=col)
 
-        await client.create_collection(
-            collection_name=col,
-            vectors_config={
-                "text_dense": VectorParams(
-                    size=self._settings.mesh_embedding_dim,
-                    distance=Distance.COSINE,
-                ),
-                "graph_dense": VectorParams(
-                    size=GRAPH_EMBED_DIM,
-                    distance=Distance.COSINE,
-                ),
-            },
-            sparse_vectors_config={
-                "bm25_sparse": SparseVectorParams(index=SparseIndexParams()),
-            },
-        )
-        logger.info("Qdrant collection created", collection=col)
+        # Qdrant Cloud requires explicit payload indexes for filtered search.
+        # create_payload_index is idempotent — safe to call on every startup.
+        try:
+            await client.create_payload_index(
+                collection_name=col,
+                field_name="modality",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+            await client.create_payload_index(
+                collection_name=col,
+                field_name="doc_id",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass  # indexes may already exist
 
     @retry(
         retry=retry_if_exception_type(Exception),

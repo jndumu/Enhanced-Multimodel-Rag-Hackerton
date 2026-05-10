@@ -401,12 +401,55 @@ class _PyMuPDFClient:
             )])
 
     def _parse_pdf(self, path: str) -> "_FallbackResult":
+        import base64
         import fitz  # PyMuPDF
 
         elements: list[_FallbackElement] = []
         doc = fitz.open(path)
 
         for page_num, page in enumerate(doc, start=1):
+            # --- Tables (PyMuPDF 1.23+) ---
+            try:
+                for tbl in page.find_tables().tables:
+                    rows = tbl.extract()
+                    if not rows:
+                        continue
+                    flat = " | ".join(
+                        cell.strip() for row in rows for cell in row if cell and cell.strip()
+                    )
+                    if not flat:
+                        continue
+                    html_rows = "".join(
+                        "<tr>" + "".join(f"<td>{c or ''}</td>" for c in row) + "</tr>"
+                        for row in rows
+                    )
+                    r = tbl.bbox
+                    elements.append(_FallbackElement(
+                        label="table", text=flat, page=page_num, confidence=0.9,
+                        bbox=BBox(x0=r[0], y0=r[1], x1=r[2], y1=r[3], page=page_num),
+                        html=f"<table>{html_rows}</table>",
+                    ))
+            except Exception:
+                pass
+
+            # --- Embedded raster images → figure ---
+            try:
+                for img_info in page.get_images(full=True):
+                    xref = img_info[0]
+                    clip = page.get_image_bbox(img_info)
+                    if clip.is_empty:
+                        continue
+                    pix = page.get_pixmap(clip=clip, dpi=96)
+                    img_b64 = base64.b64encode(pix.tobytes("png")).decode()
+                    elements.append(_FallbackElement(
+                        label="figure", text="[Figure]", page=page_num, confidence=0.85,
+                        bbox=BBox(x0=clip.x0, y0=clip.y0, x1=clip.x1, y1=clip.y1, page=page_num),
+                        image_b64=img_b64,
+                    ))
+            except Exception:
+                pass
+
+            # --- Text blocks ---
             blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
 
             for block in blocks:
@@ -422,9 +465,12 @@ class _PyMuPDFClient:
                         font_size: float = span.get("size", 12)
                         flags: int = span.get("flags", 0)
                         is_bold = bool(flags & 2**4)
+                        font_name: str = span.get("font", "").lower()
 
-                        # Classify by font size + bold
-                        if font_size >= 16 or (font_size >= 13 and is_bold):
+                        # Classify by font size + bold + monospace
+                        if "mono" in font_name or "courier" in font_name or "code" in font_name:
+                            label = "code_block"
+                        elif font_size >= 16 or (font_size >= 13 and is_bold):
                             label = "document_title" if page_num == 1 else "section_title"
                         elif font_size >= 12 and is_bold:
                             label = "subsection_title"

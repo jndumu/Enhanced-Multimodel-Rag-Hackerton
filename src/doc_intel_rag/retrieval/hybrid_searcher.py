@@ -163,7 +163,7 @@ class HybridSearcher:
 
         if not conditions:
             return None
-        return Filter(must=conditions) if len(conditions) > 1 else conditions[0]
+        return Filter(must=conditions)
 
     async def _graph_traverse(
         self, seed_chunks: list[ScoredChunk], collection: str | None
