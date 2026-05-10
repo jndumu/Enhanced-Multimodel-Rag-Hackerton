@@ -145,14 +145,14 @@ def main() -> None:
             encrypted = encrypt_secret(public_key, value)
             status    = put_secret(args.repo, args.token, name, encrypted, key_id)
             label     = "created" if status == 201 else "updated"
-            print(f"  {name:<33} ✓ {label}")
+            print(f"  {name:<33} OK  {label}")
             ok += 1
         except Exception as exc:
-            print(f"  {name:<33} ✗ {exc}")
+            print(f"  {name:<33} ERR {exc}")
             failed += 1
 
     print(f"\n{'=' * 50}")
-    print(f"  ✓ {ok} pushed    ✗ {failed} failed")
+    print(f"  OK {ok} pushed    ERR {failed} failed")
     print(f"\nVerify at: https://github.com/{args.repo}/settings/secrets/actions")
 
 
