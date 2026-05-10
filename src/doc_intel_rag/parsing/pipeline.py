@@ -433,13 +433,16 @@ class _PyMuPDFClient:
                 pass
 
             # --- Embedded raster images → figure ---
+            # Skip tiny artifacts: require at least 40pt wide AND 40pt tall.
             try:
                 for img_info in page.get_images(full=True):
-                    xref = img_info[0]
                     clip = page.get_image_bbox(img_info)
                     if clip.is_empty:
                         continue
-                    pix = page.get_pixmap(clip=clip, dpi=96)
+                    w, h = clip.x1 - clip.x0, clip.y1 - clip.y0
+                    if w < 40 or h < 40:
+                        continue
+                    pix = page.get_pixmap(clip=clip, dpi=150)
                     img_b64 = base64.b64encode(pix.tobytes("png")).decode()
                     elements.append(_FallbackElement(
                         label="figure", text="[Figure]", page=page_num, confidence=0.85,
