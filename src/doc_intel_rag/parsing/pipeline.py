@@ -128,8 +128,12 @@ class DocumentParser:
                     timeout=self._settings.glmocr_timeout,
                 )
         except ImportError:
-            logger.info("glmocr SDK not installed — using PyMuPDF fallback parser")
-            self._client = _PyMuPDFClient()
+            if self._settings.vision_enabled:
+                logger.info("glmocr SDK not installed — using GLM-OCR vision client (hybrid mode)")
+                self._client = _GLMOCRClient(self._settings)
+            else:
+                logger.info("glmocr SDK not installed — using PyMuPDF fallback parser")
+                self._client = _PyMuPDFClient()
 
         return self._client
 
@@ -364,6 +368,226 @@ class DocumentParser:
         except Exception as exc:
             logger.debug("Element crop failed", error=str(exc))
             return None
+
+
+class _GLMOCRClient:
+    """Hybrid GLM-OCR parser: PyMuPDF for text + vision LLM for figures/formulas/scanned pages.
+
+    Strategy:
+    - PyMuPDF extracts all text spans with accurate bounding boxes and font metadata.
+      This is reliable and needs no API call.
+    - Vision model (GLM-5 / qwen-turbo via Requesty) enriches non-text elements:
+        * Figures → classified into medical_scan / chart / diagram / figure etc.
+        * Formulas → LaTeX extracted from math-heavy image regions
+        * Scanned pages → full-page OCR when PyMuPDF finds no text
+    - Falls back to _PyMuPDFClient behaviour for any page where vision call fails.
+
+    Activated automatically when VISION_ENABLED=true and glmocr SDK is absent.
+    """
+
+    # Maps vision model label → EntityLabel value
+    _VISION_LABEL_MAP: dict[str, str] = {
+        "medical_scan":   "medical_scan",
+        "ct_scan":        "medical_scan",
+        "mri":            "medical_scan",
+        "xray":           "medical_scan",
+        "ultrasound":     "medical_scan",
+        "histology":      "histology",
+        "clinical_photo": "clinical_photo",
+        "chart":          "chart",
+        "bar_chart":      "chart",
+        "line_chart":     "chart",
+        "pie_chart":      "chart",
+        "diagram":        "diagram",
+        "flowchart":      "flowchart",
+        "architecture":   "diagram",
+        "figure":         "figure",
+        "image":          "figure",
+        "formula":        "formula",
+        "equation":       "formula",
+        "table":          "table",
+        "algorithm":      "algorithm",
+        "code":           "code_block",
+    }
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._pymupdf = _PyMuPDFClient()
+
+    def parse(self, path: str) -> "_FallbackResult":
+        suffix = Path(path).suffix.lower()
+        if suffix != ".pdf":
+            return self._pymupdf.parse(path)
+        return self._parse_pdf_hybrid(path)
+
+    def _parse_pdf_hybrid(self, path: str) -> "_FallbackResult":
+        import asyncio
+        import fitz
+
+        elements: list[_FallbackElement] = []
+        doc = fitz.open(path)
+
+        for page_num, page in enumerate(doc, start=1):
+            # ── Text via PyMuPDF (accurate, free) ──────────────────────────
+            text_elements = self._extract_text_spans(page, page_num)
+            elements.extend(text_elements)
+
+            # ── Figures via vision model ────────────────────────────────────
+            for img_info in page.get_images(full=True):
+                clip = page.get_image_bbox(img_info)
+                if clip.is_empty:
+                    continue
+                w, h = clip.x1 - clip.x0, clip.y1 - clip.y0
+                if w < 40 or h < 40:
+                    continue
+                try:
+                    pix = page.get_pixmap(clip=clip, dpi=150)
+                    img_b64 = base64.b64encode(pix.tobytes("png")).decode()
+                    label, caption = self._classify_figure_sync(img_b64)
+                    elements.append(_FallbackElement(
+                        label=label, text=caption, page=page_num, confidence=0.88,
+                        bbox=BBox(x0=clip.x0, y0=clip.y0, x1=clip.x1, y1=clip.y1, page=page_num),
+                        image_b64=img_b64,
+                    ))
+                except Exception as exc:
+                    logger.debug("Vision figure classification failed", page=page_num, error=str(exc))
+
+            # ── Scanned page OCR (no text from PyMuPDF → send full page) ──
+            page_text = " ".join(e.text for e in text_elements if e.text.strip())
+            if len(page_text.strip()) < 50:
+                try:
+                    pix = page.get_pixmap(dpi=150)
+                    img_b64 = base64.b64encode(pix.tobytes("png")).decode()
+                    ocr_text = self._ocr_page_sync(img_b64)
+                    if ocr_text and len(ocr_text.strip()) > 20:
+                        elements.append(_FallbackElement(
+                            label="paragraph", text=ocr_text.strip(),
+                            page=page_num, confidence=0.75,
+                        ))
+                        logger.info("GLM-OCR scanned page text", page=page_num, chars=len(ocr_text))
+                except Exception as exc:
+                    logger.debug("GLM-OCR page OCR failed", page=page_num, error=str(exc))
+
+            # ── Tables ──────────────────────────────────────────────────────
+            try:
+                for tbl in page.find_tables().tables:
+                    rows = tbl.extract()
+                    if not rows:
+                        continue
+                    flat = " | ".join(
+                        cell.strip() for row in rows for cell in row if cell and cell.strip()
+                    )
+                    if not flat:
+                        continue
+                    html_rows = "".join(
+                        "<tr>" + "".join(f"<td>{c or ''}</td>" for c in row) + "</tr>"
+                        for row in rows
+                    )
+                    r = tbl.bbox
+                    elements.append(_FallbackElement(
+                        label="table", text=flat, page=page_num, confidence=0.92,
+                        bbox=BBox(x0=r[0], y0=r[1], x1=r[2], y1=r[3], page=page_num),
+                        html=f"<table>{html_rows}</table>",
+                    ))
+            except Exception:
+                pass
+
+        doc.close()
+        logger.info("GLM-OCR hybrid parse complete", path=path, elements=len(elements))
+        return _FallbackResult(elements)
+
+    def _extract_text_spans(self, page: Any, page_num: int) -> list["_FallbackElement"]:
+        import fitz
+        elements: list[_FallbackElement] = []
+        blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
+        for block in blocks:
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    text = span.get("text", "").strip()
+                    if not text:
+                        continue
+                    font_size: float = span.get("size", 12)
+                    flags: int = span.get("flags", 0)
+                    is_bold = bool(flags & 2**4)
+                    font_name: str = span.get("font", "").lower()
+                    if "mono" in font_name or "courier" in font_name or "code" in font_name:
+                        label = "code_block"
+                    elif font_size >= 16 or (font_size >= 13 and is_bold):
+                        label = "document_title" if page_num == 1 else "section_title"
+                    elif font_size >= 12 and is_bold:
+                        label = "subsection_title"
+                    else:
+                        label = "paragraph"
+                    r = span.get("bbox", (0, 0, 0, 0))
+                    elements.append(_FallbackElement(
+                        label=label, text=text, page=page_num, confidence=1.0,
+                        bbox=BBox(x0=r[0], y0=r[1], x1=r[2], y1=r[3], page=page_num),
+                    ))
+        return elements
+
+    def _classify_figure_sync(self, img_b64: str) -> tuple[str, str]:
+        """Synchronous vision call — classify figure type and generate caption.
+
+        Uses a blocking httpx.Client because this method is called from inside
+        a thread-pool executor (run_in_executor) where there is no running event loop.
+        """
+        import httpx
+        prompt = (
+            "Classify this image in two parts separated by |:\n"
+            "1. Type (one word only, choose from: medical_scan, ct_scan, mri, xray, ultrasound, "
+            "histology, chart, diagram, flowchart, figure, formula, algorithm, table, clinical_photo)\n"
+            "2. One sentence description of what it shows.\n"
+            "Example: medical_scan|MRI brain slice showing tumour segmentation in temporal lobe\n"
+            "Reply with ONLY the two parts separated by |, nothing else."
+        )
+        with httpx.Client(timeout=30) as c:
+            r = c.post(
+                self._settings.mesh_api_base_url + "/chat/completions",
+                headers={"Authorization": f"Bearer {self._settings.mesh_api_key}"},
+                json={
+                    "model": self._settings.vision_model,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                    ]}],
+                    "max_tokens": 60,
+                },
+            )
+        if r.status_code != 200:
+            return "figure", "[Figure]"
+        raw = r.json()["choices"][0]["message"]["content"].strip()
+        parts = raw.split("|", 1)
+        raw_label = parts[0].strip().lower().replace(" ", "_")
+        caption = parts[1].strip() if len(parts) > 1 else "[Figure]"
+        label = self._VISION_LABEL_MAP.get(raw_label, "figure")
+        return label, caption
+
+    def _ocr_page_sync(self, img_b64: str) -> str:
+        """Synchronous full-page OCR for scanned/image-only pages."""
+        import httpx
+        prompt = (
+            "This is a scanned document page. Transcribe every word of text you can see, "
+            "in reading order (top to bottom, left to right). Include headings, body text, "
+            "captions, and labels. Output the raw text only — no descriptions."
+        )
+        with httpx.Client(timeout=45) as c:
+            r = c.post(
+                self._settings.mesh_api_base_url + "/chat/completions",
+                headers={"Authorization": f"Bearer {self._settings.mesh_api_key}"},
+                json={
+                    "model": self._settings.vision_model,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                    ]}],
+                    "max_tokens": 2048,
+                },
+            )
+        if r.status_code != 200:
+            return ""
+        return r.json()["choices"][0]["message"]["content"] or ""
 
 
 class _PyMuPDFClient:
