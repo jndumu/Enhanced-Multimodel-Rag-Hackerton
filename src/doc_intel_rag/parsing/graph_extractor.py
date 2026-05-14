@@ -53,16 +53,17 @@ class GraphExtractor:
     def _get_nlp(self) -> Any:
         if self._nlp is not None:
             return self._nlp
-        try:
-            import spacy
-            self._nlp = spacy.load("en_core_web_trf")
-        except (ImportError, OSError):
+        import spacy
+        for model in ("en_core_web_trf", "en_core_web_lg", "en_core_web_sm"):
             try:
-                import spacy
-                self._nlp = spacy.load("en_core_web_sm")
+                self._nlp = spacy.load(model)
+                logger.debug("spaCy loaded model: {}", model)
+                break
             except (ImportError, OSError):
-                logger.warning("spaCy model not available — text NER disabled")
-                self._nlp = None
+                continue
+        else:
+            logger.warning("spaCy model not available — text NER disabled")
+            self._nlp = None
         return self._nlp
 
     @retry(
