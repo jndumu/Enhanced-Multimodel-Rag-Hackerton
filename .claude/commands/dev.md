@@ -1,4 +1,5 @@
 # doc-intel-rag dev skill
+> Full project reference: see [CLAUDE.md](../CLAUDE.md)
 
 You are helping develop **doc-intel-rag** — a production-grade multimodal RAG system built with FastAPI, Qdrant, Redis, and the Mesh API. The project root is `doc-intel-rag/`. All commands below are run from that directory.
 
